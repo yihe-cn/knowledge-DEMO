@@ -8,36 +8,88 @@ import { KpDetailModal } from "./PracticeKnowledge.jsx";
 function ReportScreen({ t, state, go }) {
   const { SCRIPT, KP_INDEX, CUSTOMER, KNOWLEDGE } = window.SIMUGO_DATA;
   const picks = state.picks || [];
+  const serverReport = state.report || null;
   const viewedKp = useMemo(() => new Set(state.viewedKp || []), [state.viewedKp]);
   const citedKp = useMemo(() => {
     const s = new Set();
     picks.forEach(p => (p.cites || []).forEach(c => s.add(c)));
     return s;
   }, [picks]);
-  const scenarioKp = useMemo(() => {
+
+  // ─── 维度 / 总分：优先 server，缺失走本地兜底 ─────────────
+  const dims = useMemo(() => {
+    if (serverReport?.dimensions?.length) {
+      return serverReport.dimensions.map(d => ({
+        id: d.id, label: d.label, weight: d.weight, value: d.value, comment: d.comment || '',
+      }));
+    }
+    const score = computeScore(picks);
+    return [
+      { id: 'know', label: '产品知识准确性', weight: 35, value: score.know },
+      { id: 'obj',  label: '异议处理',     weight: 30, value: score.obj  },
+      { id: 'need', label: '需求挖掘',     weight: 20, value: score.need },
+      { id: 'comm', label: '沟通表达',     weight: 15, value: score.comm },
+    ];
+  }, [serverReport, picks]);
+
+  const total = serverReport?.overview?.total
+    ?? Math.round(dims.reduce((acc, d) => acc + d.value * d.weight, 0) / 100);
+  const grade = serverReport?.overview?.grade
+    ?? (total >= 85 ? 'A' : total >= 75 ? 'B+' : total >= 65 ? 'B' : total >= 55 ? 'C' : 'D');
+  const gradeColor = total >= 75 ? t.good : total >= 60 ? t.warn : t.bad;
+  const headline = serverReport?.overview?.headline
+    ?? (grade === 'A' ? '熟练 · 可以独立接待' : grade.startsWith('B') ? '基本掌握 · 仍需强化' : '需要回炉');
+  const summary = serverReport?.overview?.summary
+    ?? (grade === 'A'
+      ? '产品力扎实，对话节奏清晰。建议直接进入下一场景。'
+      : grade.startsWith('B')
+        ? '基本掌握，但仍有能力缺口，建议先回到课程强化后再练。'
+        : '多个核心知识点未在对话中调用，建议回到课程模块重新学习。');
+
+  // ─── Gaps：server 含 diagnosis + suggested_response；否则本地兜底 ──
+  const gaps = useMemo(() => {
+    if (serverReport?.gaps) return serverReport.gaps;
+    return buildGaps(picks, SCRIPT).map(g => ({
+      turnIndex: g.turnIndex,
+      customer_line: g.customer,
+      quality: g.quality,
+      skill: g.skill,
+      missed_kp: g.missedKp,
+      diagnosis: g.feedback,
+      suggested_response: '',
+    }));
+  }, [serverReport, picks]);
+
+  // ─── Coverage rows：server enrich 后已带 module/point title ─
+  const coverageRows = useMemo(() => {
+    if (serverReport?.coverage?.rows) return serverReport.coverage.rows;
+    // fallback：组合 SCRIPT.recommendedKp + picks.cites
     const set = new Set();
     SCRIPT.forEach(turn => (turn.recommendedKp || []).forEach(id => set.add(id)));
     picks.forEach(p => (p.cites || []).forEach(id => set.add(id)));
-    return Array.from(set);
-  }, [picks]);
-
-  // ─── Compute scores ──────────────────────────────────────
-  const score = useMemo(() => computeScore(picks), [picks]);
-  const dims = [
-    { id: 'know', label: '产品知识准确性', weight: 35, value: score.know },
-    { id: 'obj',  label: '异议处理',     weight: 30, value: score.obj  },
-    { id: 'need', label: '需求挖掘',     weight: 20, value: score.need },
-    { id: 'comm', label: '沟通表达',     weight: 15, value: score.comm },
-  ];
-  const total = Math.round(dims.reduce((acc, d) => acc + d.value * d.weight, 0) / 100);
-  const grade = total >= 85 ? 'A' : total >= 75 ? 'B+' : total >= 65 ? 'B' : total >= 55 ? 'C' : 'D';
-  const gradeColor = total >= 75 ? t.good : total >= 60 ? t.warn : t.bad;
-
-  // ─── Find gaps (回指课程) ────────────────────────────────
-  const gaps = useMemo(() => buildGaps(picks, SCRIPT), [picks]);
+    return Array.from(set).map(kpId => {
+      const ref = KP_INDEX[kpId];
+      if (!ref) return null;
+      let status = 'missed';
+      if (citedKp.has(kpId)) status = 'cited';
+      else if (viewedKp.has(kpId)) status = 'viewed';
+      return {
+        kpId,
+        status,
+        module_title: ref.module.title,
+        point_title: ref.point.title,
+        tier: ref.point.tier || '',
+      };
+    }).filter(Boolean);
+  }, [serverReport, picks, citedKp, viewedKp]);
 
   // ─── Todos ────────────────────────────────────────────────
-  const todos = useMemo(() => buildTodos(picks, gaps), [picks, gaps]);
+  const todos = useMemo(() => {
+    if (serverReport?.todos) return serverReport.todos;
+    return buildTodos(picks, buildGaps(picks, SCRIPT)).map(td => ({
+      priority: td.priority, title: td.title, context: td.context, kpId: td.kpId,
+    }));
+  }, [serverReport, picks]);
 
   const [tab, setTab] = useState('overview');
   const [highlightKp, setHighlightKp] = useState(null);
@@ -55,15 +107,11 @@ function ReportScreen({ t, state, go }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <ScoreDial t={t} value={total} color={gradeColor} grade={grade} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: t.textMute, letterSpacing: '0.08em', fontWeight: 600 }}>总评分</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: t.text, marginTop: 4 }}>
-              {grade === 'A' ? '熟练 · 可以独立接待' : grade.startsWith('B') ? '基本掌握 · 仍需强化' : '需要回炉'}
+            <div style={{ fontSize: 11, color: t.textMute, letterSpacing: '0.08em', fontWeight: 600 }}>
+              总评分{serverReport ? ' · AI 教练' : ''}
             </div>
-            <div style={{ fontSize: 12, color: t.textSoft, marginTop: 6, lineHeight: 1.55 }}>
-              {grade === 'A' ? '产品力扎实，对话节奏清晰。建议直接进入下一场景。' :
-               grade.startsWith('B') ? `${gaps.length} 个能力缺口需要回到课程强化后再练。` :
-               '多个核心知识点未在对话中调用，建议回到课程模块重新学习。'}
-            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: t.text, marginTop: 4 }}>{headline}</div>
+            <div style={{ fontSize: 12, color: t.textSoft, marginTop: 6, lineHeight: 1.55 }}>{summary}</div>
           </div>
         </div>
       </Card>
@@ -90,7 +138,7 @@ function ReportScreen({ t, state, go }) {
       {/* Panels */}
       {tab === 'overview' && (
         <OverviewPanel t={t} dims={dims} total={total}
-          scenarioKp={scenarioKp} citedKp={citedKp} viewedKp={viewedKp}
+          coverageRows={coverageRows}
           onOpenKp={(id) => setHighlightKp(id)} />
       )}
       {tab === 'gaps' && <GapsPanel t={t} gaps={gaps} onJumpToCourse={(kpId) => { setHighlightKp(kpId); go('learn', { highlight: kpId }); }} />}
@@ -221,15 +269,13 @@ function ScoreDial({ t, value, color, grade }) {
 }
 
 // ─── Radar chart ──────────────────────────────────────────
-function OverviewPanel({ t, dims, total, scenarioKp, citedKp, viewedKp, onOpenKp }) {
+function OverviewPanel({ t, dims, total, coverageRows, onOpenKp }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <Card t={t} style={{ padding: 18 }}>
         <RadarChart t={t} dims={dims} />
       </Card>
-      <KnowledgeCoverageCard t={t}
-        scenarioKp={scenarioKp} citedKp={citedKp} viewedKp={viewedKp}
-        onOpenKp={onOpenKp} />
+      <KnowledgeCoverageCard t={t} rows={coverageRows} onOpenKp={onOpenKp} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {dims.map(d => (
           <Card key={d.id} t={t} style={{ padding: '14px 16px' }}>
@@ -257,6 +303,8 @@ function OverviewPanel({ t, dims, total, scenarioKp, citedKp, viewedKp, onOpenKp
 }
 
 function dimensionComment(d) {
+  // 优先使用 server 端 LLM 生成的 comment；否则按分数走本地模板兜底
+  if (d.comment) return d.comment;
   if (d.id === 'know') return d.value >= 75 ? '参数引用具体、可信。' : d.value >= 60 ? '提到了参数但未充分展开。' : '多处应用知识点的机会未被把握。';
   if (d.id === 'obj')  return d.value >= 75 ? '面对顾虑能先共情、再用事实回应。' : d.value >= 60 ? '回应客户顾虑时事实依据不够。' : '在关键顾虑环节缺乏事实支撑。';
   if (d.id === 'need') return d.value >= 75 ? '介绍产品前先了解客户场景。' : '可在更多环节先反问客户用车习惯。';
@@ -329,47 +377,68 @@ function GapsPanel({ t, gaps, onJumpToCourse }) {
       <div style={{ fontSize: 12, color: t.textSoft, padding: '0 4px 4px', lineHeight: 1.5 }}>
         每个失分点都标注了未引用的<b style={{ color: t.accent }}>课程知识点</b>，点击直接跳回课程模块复习。
       </div>
-      {gaps.map((g, i) => (
-        <Card key={i} t={t} style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <div style={{
-              width: 26, height: 26, borderRadius: 999,
-              background: g.quality === 'bad' ? t.bad : t.warn,
-              color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 12, fontWeight: 700,
-            }}>{i + 1}</div>
-            <div style={{ fontSize: 12, color: t.textMute }}>第 {g.turnIndex + 1} 轮 · {g.skill}</div>
-          </div>
-          <div style={{ ...neuInset(t, 12, 0.5), padding: '10px 12px', marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: t.textMute, fontWeight: 600, letterSpacing: '0.08em', marginBottom: 4 }}>客户原话</div>
-            <div style={{ fontSize: 12.5, color: t.text, lineHeight: 1.5 }}>"{g.customer}"</div>
-          </div>
-          <div style={{ fontSize: 12, color: t.textSoft, lineHeight: 1.55, marginBottom: 10 }}>{g.feedback}</div>
-          {g.missedKp.map(kpId => {
-            const ref = window.SIMUGO_DATA.KP_INDEX[kpId];
-            if (!ref) return null;
-            return (
-              <div key={kpId} onClick={() => onJumpToCourse(kpId)} style={{
-                marginTop: 6, padding: '10px 12px', borderRadius: 12,
-                background: `linear-gradient(135deg, ${t.accent}18, ${t.accentSoft}14)`,
-                display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                border: `1px solid ${t.accent}30`,
-              }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: 10, background: t.accent, color: '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                  fontSize: 14, fontWeight: 700,
-                }}>{ref.module.icon}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 10, color: t.accent, fontWeight: 700, letterSpacing: '0.08em' }}>未引用 · 回指课程</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>{ref.module.title} › {ref.point.title}</div>
-                </div>
-                <Icon name="arrow" size={16} color={t.accent} />
+      {gaps.map((g, i) => {
+        const missed = g.missed_kp || [];
+        return (
+          <Card key={i} t={t} style={{ padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: 999,
+                background: g.quality === 'bad' ? t.bad : t.warn,
+                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, fontWeight: 700,
+              }}>{i + 1}</div>
+              <div style={{ fontSize: 12, color: t.textMute }}>第 {(g.turnIndex ?? 0) + 1} 轮 · {g.skill}</div>
+            </div>
+            <div style={{ ...neuInset(t, 12, 0.5), padding: '10px 12px', marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: t.textMute, fontWeight: 600, letterSpacing: '0.08em', marginBottom: 4 }}>客户原话</div>
+              <div style={{ fontSize: 12.5, color: t.text, lineHeight: 1.5 }}>"{g.customer_line}"</div>
+            </div>
+            {g.diagnosis && (
+              <div style={{ fontSize: 12, color: t.textSoft, lineHeight: 1.55, marginBottom: 10 }}>
+                <b style={{ color: t.text }}>诊断：</b>{g.diagnosis}
               </div>
-            );
-          })}
-        </Card>
-      ))}
+            )}
+            {g.suggested_response && (
+              <div style={{
+                fontSize: 12.5, color: t.text, lineHeight: 1.55, marginBottom: 10,
+                padding: '10px 12px', borderRadius: 10,
+                background: `linear-gradient(135deg, ${t.good}12, ${t.good}06)`,
+                border: `1px dashed ${t.good}55`,
+              }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: t.good, letterSpacing: '0.08em', marginRight: 6 }}>示例话术</span>
+                {g.suggested_response}
+              </div>
+            )}
+            {missed.map(kpId => {
+              const ref = window.SIMUGO_DATA.KP_INDEX?.[kpId];
+              // 真实产品没有 KP_INDEX 时也要能渲染：用 module_title/point_title 兜底（这里没有，直接用 kpId）
+              const moduleTitle = ref?.module?.title || '相关模块';
+              const pointTitle = ref?.point?.title || kpId;
+              const icon = ref?.module?.icon || '📘';
+              return (
+                <div key={kpId} onClick={() => onJumpToCourse(kpId)} style={{
+                  marginTop: 6, padding: '10px 12px', borderRadius: 12,
+                  background: `linear-gradient(135deg, ${t.accent}18, ${t.accentSoft}14)`,
+                  display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                  border: `1px solid ${t.accent}30`,
+                }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 10, background: t.accent, color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    fontSize: 14, fontWeight: 700,
+                  }}>{icon}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 10, color: t.accent, fontWeight: 700, letterSpacing: '0.08em' }}>未引用 · 回指课程</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>{moduleTitle} › {pointTitle}</div>
+                  </div>
+                  <Icon name="arrow" size={16} color={t.accent} />
+                </div>
+              );
+            })}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -448,26 +517,17 @@ function ReplayPanel({ t, picks }) {
 export { ReportScreen };
 
 // ─── Knowledge coverage card — appears in overview ────────
-function KnowledgeCoverageCard({ t, scenarioKp, citedKp, viewedKp, onOpenKp }) {
-  const { KP_INDEX } = window.SIMUGO_DATA;
-  if (!scenarioKp || scenarioKp.length === 0) return null;
+function KnowledgeCoverageCard({ t, rows: rawRows, onOpenKp }) {
+  if (!rawRows || rawRows.length === 0) return null;
 
-  // Bucket each KP into a status
-  const rows = scenarioKp.map(id => {
-    const ref = KP_INDEX[id];
-    if (!ref) return null;
-    let status = 'missed';
-    if (citedKp.has(id)) status = 'cited';
-    else if (viewedKp.has(id)) status = 'viewed';
-    return { id, ref, status };
-  }).filter(Boolean);
+  // Normalize: 接受 server 端格式 {kpId, status, module_title, point_title, tier}
+  const rows = rawRows.slice();
 
-  // Sort: cited → viewed → missed; within group, core first
   const order = { cited: 0, viewed: 1, missed: 2 };
   rows.sort((a, b) => {
     if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
-    const ac = a.ref.point.tier === 'core' ? 0 : 1;
-    const bc = b.ref.point.tier === 'core' ? 0 : 1;
+    const ac = a.tier === 'core' ? 0 : 1;
+    const bc = b.tier === 'core' ? 0 : 1;
     return ac - bc;
   });
 
@@ -477,7 +537,7 @@ function KnowledgeCoverageCard({ t, scenarioKp, citedKp, viewedKp, onOpenKp }) {
     viewed: rows.filter(r => r.status === 'viewed').length,
     missed: rows.filter(r => r.status === 'missed').length,
   };
-  const pct = Math.round((counts.cited / counts.total) * 100);
+  const pct = counts.total ? Math.round((counts.cited / counts.total) * 100) : 0;
 
   return (
     <Card t={t} style={{ padding: 16 }}>
@@ -532,7 +592,7 @@ function KnowledgeCoverageCard({ t, scenarioKp, citedKp, viewedKp, onOpenKp }) {
         padding: 8,
         display: 'flex', flexDirection: 'column', gap: 4,
       }}>
-        {rows.map(r => <KpCoverageRow key={r.id} t={t} row={r} onOpen={onOpenKp} />)}
+        {rows.map(r => <KpCoverageRow key={r.kpId} t={t} row={r} onOpen={onOpenKp} />)}
       </div>
 
       <div style={{
@@ -546,18 +606,20 @@ function KnowledgeCoverageCard({ t, scenarioKp, citedKp, viewedKp, onOpenKp }) {
 }
 
 function KpCoverageRow({ t, row, onOpen }) {
-  const { id, ref, status } = row;
-  const { point: p, module: m } = ref;
-  const isCore = p.tier === 'core';
+  const { kpId, status, module_title: moduleTitle, point_title: pointTitle, tier } = row;
+  // 真实产品没有 KP_INDEX，icon 用兜底
+  const ref = window.SIMUGO_DATA?.KP_INDEX?.[kpId];
+  const moduleIcon = ref?.module?.icon || '📘';
+  const isCore = tier === 'core';
 
   const statusConf = {
     cited:  { icon: '✓', color: t.good,     label: '引用' },
     viewed: { icon: '◔', color: t.warn,     label: '已查阅' },
     missed: { icon: '○', color: t.textMute, label: '错过' },
-  }[status];
+  }[status] || { icon: '○', color: t.textMute, label: '错过' };
 
   return (
-    <div onClick={() => onOpen(id)} style={{
+    <div onClick={() => onOpen(kpId)} style={{
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '8px 10px', borderRadius: 9,
       cursor: 'pointer',
@@ -577,11 +639,11 @@ function KpCoverageRow({ t, row, onOpen }) {
 
       {/* Module + KP */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-        <span style={{ fontSize: 11, flexShrink: 0 }}>{m.icon}</span>
+        <span style={{ fontSize: 11, flexShrink: 0 }}>{moduleIcon}</span>
         <span style={{
           fontSize: 13, fontWeight: 600, color: t.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{p.title}</span>
+        }}>{pointTitle || moduleTitle}</span>
         {isCore && (
           <span style={{
             fontSize: 8.5, fontWeight: 700, color: t.accentSoft,

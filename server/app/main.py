@@ -2,7 +2,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routes import admin_kb, course, dashboard, kp, practice, product, qa, quiz
+from .routes import (
+    admin_kb,
+    course,
+    course_ai,
+    dashboard,
+    kp,
+    practice,
+    practice_role as practice_role_routes,
+    product,
+    qa,
+    quiz,
+)
 
 app = FastAPI(title="SIMUGO Server", version="0.1.0")
 
@@ -66,6 +77,12 @@ app.include_router(kp.router, prefix="/api", dependencies=[Depends(require_inter
 app.include_router(admin_kb.router, prefix="/api", dependencies=[Depends(require_internal_token)])
 app.include_router(dashboard.router, prefix="/api", dependencies=[Depends(require_internal_token)])
 app.include_router(product.router, prefix="/api", dependencies=[Depends(require_internal_token)])
+app.include_router(
+    practice_role_routes.router, prefix="/api", dependencies=[Depends(require_internal_token)]
+)
+app.include_router(
+    course_ai.router, prefix="/api", dependencies=[Depends(require_internal_token)]
+)
 # Practice /turn 仍走老契约（人设 LLM 对话，不接 KB），保持不校验。
 # Practice /suggest 走 RAG（KB chunk + LLM），独立子 router 加 internal token 校验。
 # Quiz 同样暂未接 RAG。

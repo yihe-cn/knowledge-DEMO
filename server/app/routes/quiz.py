@@ -28,6 +28,27 @@ def _parse_json(raw: str) -> dict:
         return {}
 
 
+_VALID_QUALITIES = ("good", "mid", "bad")
+
+
+def _normalize_suggested_options(raw) -> list[dict]:
+    """LLM 输出宽松归一化：必须凑齐 good/mid/bad 三档且 text 非空，否则返回 []，
+    前端见到空数组会隐藏"看选项"按钮，避免渲染无效卡片或把用户卡死在空面板。"""
+    if not isinstance(raw, list):
+        return []
+    picked: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        q = item.get("quality")
+        text = item.get("text")
+        if q in _VALID_QUALITIES and q not in picked and isinstance(text, str) and text.strip():
+            picked[q] = text.strip()
+    if len(picked) != 3:
+        return []
+    return [{"quality": q, "text": picked[q]} for q in _VALID_QUALITIES]
+
+
 @router.post("/quiz/generate")
 async def quiz_generate(req: QuizGenerateRequest):
     messages = prepare_generate(req)
@@ -37,7 +58,11 @@ async def quiz_generate(req: QuizGenerateRequest):
         try:
             resp = await model.ainvoke(messages)
             data = _parse_json(getattr(resp, "content", "") or "")
-            yield sse_event("result", {"questions": data.get("questions", [])})
+            questions = data.get("questions", []) or []
+            for q in questions:
+                if isinstance(q, dict):
+                    q["suggestedOptions"] = _normalize_suggested_options(q.get("suggestedOptions"))
+            yield sse_event("result", {"questions": questions})
         except Exception as e:
             yield sse_event("error", {"message": str(e)})
         finally:

@@ -17,7 +17,9 @@ function buildQuizKnowledgeScope(KNOWLEDGE, contextKp) {
     points: m.points.map(p => ({
       id: p.id, title: p.title,
       spec: p.spec,
-      rebuttalSeeds: (p.rebuttals || []).map(r => r.q),
+      sales: p.sales,
+      customerVoice: p.customerVoice,
+      rebuttals: (p.rebuttals || []).map(r => ({ q: r.q, approach: r.approach })),
     })),
   }));
 }
@@ -90,7 +92,7 @@ function QuizMode({ t, contextKp, setContextKpId }) {
     let result = null;
     let errored = false;
     setCurrentGrade({
-      rating: 'mid', comment: '', missing: '', referenceAnswer: '',
+      rating: null, comment: '', missing: '', referenceAnswer: '',
       citations: [], studentAnswer: text, streaming: true,
     });
     // 不在此处释放 grading —— grading 同时是"再次提交"的同步守卫，必须等流式结束。
@@ -532,7 +534,42 @@ function CoachGradeBubble({ t, grade, kp, showRef, onToggleRef }) {
     mid:  { label: '可以更好', icon: '⚠️', color: t.warn, accent: '差一点意思' },
     bad:  { label: '这样客户会冷场', icon: '❌', color: t.bad, accent: '建议换个思路' },
   };
-  const r = ratings[grade.rating];
+
+  if (grade.streaming) {
+    return (
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 13, flexShrink: 0, marginTop: 2,
+          background: `linear-gradient(135deg, ${t.accent}, ${t.accentSoft})`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: `2px 2px 5px ${t.sDark}, -1px -1px 3px ${t.sLight}`,
+        }}>
+          <Icon name="sparkle" size={17} color="#fff" stroke={2} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 11, color: t.textMute, fontWeight: 600, marginBottom: 4, paddingLeft: 2 }}>AI 教练</div>
+          <div style={{
+            padding: '12px 14px', borderRadius: 18,
+            background: `${t.accent}10`,
+            border: `1.5px solid ${t.accent}30`,
+          }}>
+            <div style={{ fontSize: 12, color: t.textMute, marginBottom: grade.comment ? 6 : 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{
+                display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                background: t.accent, animation: 'quizPulse 1.2s ease-in-out infinite',
+              }} />
+              正在分析你的回答…
+            </div>
+            {grade.comment && (
+              <div style={{ fontSize: 13, color: t.text, lineHeight: 1.6 }}>{grade.comment}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const r = ratings[grade.rating] || ratings.mid;
   return (
     <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
       <div style={{
@@ -641,16 +678,20 @@ function QuizFooter({ t, graded, grading, showOptions, question, kp, input, onIn
       </div>
     );
   }
-  // 答题中 → 选项兜底面板
-  if (showOptions) {
-    const options = buildAnswerOptions(question, kp);
+  // 答题中 → 选项面板（由 AI 在出题时一并生成）
+  const validOptions = Array.isArray(question?.suggestedOptions)
+    ? question.suggestedOptions.filter(o => o && typeof o.text === 'string' && o.text.trim())
+    : [];
+  if (showOptions && validOptions.length > 0) {
+    // 用 question.id 做种子洗牌：避免每次渲染顺序抖动，又防止"第一个永远是 good"泄露答案
+    const shuffled = stableShuffle(validOptions, String(question?.id || ''));
     return (
       <div style={{ padding: '8px 18px 14px', background: `linear-gradient(180deg, ${t.bg}00 0%, ${t.bg} 30%)` }}>
         <div style={{ fontSize: 11, color: t.textMute, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8, paddingLeft: 2 }}>
           选一个最接近的答案 · AI 会评价你的选择
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {options.map((opt, i) => (
+          {shuffled.map((opt, i) => (
             <div key={i} onClick={() => onPickOption(opt.text)} style={{
               ...neuFlat(t, 14), padding: '11px 14px', cursor: 'pointer',
               fontSize: 13, color: t.text, lineHeight: 1.5,
@@ -663,13 +704,15 @@ function QuizFooter({ t, graded, grading, showOptions, question, kp, input, onIn
   // 答题中 → 输入框 + 看选项
   return (
     <div style={{ padding: '10px 14px 14px', background: `linear-gradient(180deg, ${t.bg}00 0%, ${t.bg} 30%)` }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
-        <div onClick={onShowOptions} style={{
-          padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
-          fontSize: 11, color: t.textMute, fontWeight: 600,
-          border: `1px dashed ${t.line}`,
-        }}>不会，看选项</div>
-      </div>
+      {validOptions.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+          <div onClick={onShowOptions} style={{
+            padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
+            fontSize: 11, color: t.textMute, fontWeight: 600,
+            border: `1px dashed ${t.line}`,
+          }}>不会，看选项</div>
+        </div>
+      )}
       <div style={{
         ...neuInset(t, 26, 0.7),
         display: 'flex', alignItems: 'center', gap: 6,
@@ -817,6 +860,19 @@ function parseJSON(raw) {
   } catch (e) { return null; }
 }
 
+// 基于种子字符串的稳定洗牌：同一题在不同 render 顺序一致，但不同题之间不同
+function stableShuffle(arr, seed) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
+    const j = Math.abs(h) % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function collectFallbackQuestions(KNOWLEDGE, contextKp, count) {
   // 用 rebuttals 里的 q 作为兜底题
   const pool = [];
@@ -834,18 +890,6 @@ function collectFallbackQuestions(KNOWLEDGE, contextKp, count) {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   return pool.slice(0, count);
-}
-
-function buildAnswerOptions(question, kp) {
-  // 选项兜底：模拟好/中/差三档
-  if (!kp) return [{ text: '抱歉，没有合适的选项可参考。' }];
-  const voice = kp.point.customerVoice ? `比如：${kp.point.customerVoice}` : '';
-  const goodText = [kp.point.sales.replace(/。$/, ''), voice].filter(Boolean).join('。') + '。';
-  return [
-    { quality: 'good', text: goodText },
-    { quality: 'mid',  text: kp.point.spec.slice(0, 60) + (kp.point.spec.length > 60 ? '…' : '') },
-    { quality: 'bad',  text: '这个您放心，我们做的很专业的。' },
-  ];
 }
 
 export { QuizMode };

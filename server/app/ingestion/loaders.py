@@ -1,6 +1,7 @@
-"""文档 loader。MVP 仅实现 pptx；pdf/docx 接口预留。"""
+"""文档 loader。支持 pptx 与文本型 pdf；docx 接口预留。"""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +45,48 @@ def load_pptx(path: Path) -> list[RawSection]:
     return sections
 
 
+_BOILERPLATE_RE = re.compile(
+    r"©|copyright|confidential|all right[s]? reserved|页\s*\d+\s*/|^\d+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _make_title(text: str) -> str:
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # 跳过版权/页眉页脚噪声行，避免 title 全是 "© Copyright ..."
+        if _BOILERPLATE_RE.search(line):
+            continue
+        return line[:40]
+    return ""
+
+
+def load_pdf(path: Path) -> list[RawSection]:
+    from pypdf import PdfReader  # type: ignore
+
+    reader = PdfReader(str(path))
+    sections: list[RawSection] = []
+    for idx, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if not text:
+            continue
+        sections.append(
+            RawSection(text=text, meta={"page_index": idx, "title": _make_title(text)})
+        )
+    if not sections:
+        raise ValueError("PDF contains no extractable text")
+    return sections
+
+
+def load_text(path: Path) -> list[RawSection]:
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"{path.name} is empty")
+    return [RawSection(text=text, meta={"title": _make_title(text) or path.stem})]
+
+
 def load_document(path: str | Path) -> list[RawSection]:
     p = Path(path)
     if not p.exists():
@@ -51,4 +94,10 @@ def load_document(path: str | Path) -> list[RawSection]:
     suffix = p.suffix.lower()
     if suffix in {".pptx"}:
         return load_pptx(p)
-    raise NotImplementedError(f"loader for {suffix} not implemented (MVP only supports .pptx)")
+    if suffix in {".pdf"}:
+        return load_pdf(p)
+    if suffix in {".md", ".txt"}:
+        return load_text(p)
+    raise NotImplementedError(
+        f"loader for {suffix} not implemented (MVP supports .pptx, text pdf, md and txt)"
+    )

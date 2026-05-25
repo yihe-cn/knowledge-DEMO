@@ -71,8 +71,17 @@ def chunk_sections(sections: Iterable[RawSection]) -> list[Chunk]:
         if not buffer:
             return
         merged_text = "\n\n".join(s.text for s in buffer)
+        # PPT 走 slide_index，PDF 走 page_index——统一收到 source_indices，
+        # 同时保留旧字段 slide_indices 以兼容已写入的 chunk meta 与下游消费方。
+        source_indices = [
+            s.meta.get("slide_index") or s.meta.get("page_index")
+            for s in buffer
+            if s.meta.get("slide_index") or s.meta.get("page_index")
+        ]
         merged_meta = {
             "slide_indices": [s.meta.get("slide_index") for s in buffer if s.meta.get("slide_index")],
+            "page_indices": [s.meta.get("page_index") for s in buffer if s.meta.get("page_index")],
+            "source_indices": source_indices,
             "titles": [s.meta.get("title", "") for s in buffer],
         }
         if _tok_len(merged_text) > _TARGET:
@@ -86,8 +95,12 @@ def chunk_sections(sections: Iterable[RawSection]) -> list[Chunk]:
         st = _tok_len(section.text)
         if st >= _TARGET:
             flush_buffer()
+            slide_idx = section.meta.get("slide_index")
+            page_idx = section.meta.get("page_index")
             chunks.extend(_split_long(section.text, {
-                "slide_indices": [section.meta.get("slide_index")] if section.meta.get("slide_index") else [],
+                "slide_indices": [slide_idx] if slide_idx else [],
+                "page_indices": [page_idx] if page_idx else [],
+                "source_indices": [slide_idx or page_idx] if (slide_idx or page_idx) else [],
                 "titles": [section.meta.get("title", "")],
             }))
             continue

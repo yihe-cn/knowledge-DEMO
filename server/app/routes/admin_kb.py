@@ -37,7 +37,7 @@ router = APIRouter()
 _UPLOAD_DIR = Path(__file__).resolve().parents[3] / "server" / "uploads"
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-_ALLOWED_EXT = {".pdf", ".pptx", ".ppt", ".md", ".txt"}
+_ALLOWED_EXT = {".pdf", ".pptx", ".md", ".txt"}
 
 
 def _doc_to_dict(doc: KbDocument, product: Product | None = None) -> dict[str, Any]:

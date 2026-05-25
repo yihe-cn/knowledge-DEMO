@@ -17,6 +17,7 @@ from ..db import (
     KpProductLink,
     KpRegistry,
     KpStatus,
+    PracticeRole,
     Product,
     ProductStatus,
     get_session,
@@ -58,6 +59,62 @@ def _meta_from_product(p: Product, kp_total: int) -> dict[str, Any]:
         "knowledgeTotal": kp_total,
         # 前端用此判断「该 product 来自后端，未在 PRODUCTS 静态注册」
         "fromBackend": True,
+    }
+
+
+def _clamp_int(v: Any, *, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _str_list(v: Any, *, max_len: int = 8, item_max_chars: int = 60) -> list[str]:
+    if not isinstance(v, list):
+        return []
+    out: list[str] = []
+    for item in v[:max_len]:
+        s = str(item).strip()
+        if s:
+            out.append(s[:item_max_chars])
+    return out
+
+
+def _safe_mood(v: Any) -> dict[str, int]:
+    """clamp mood 到 [0, 100]，缺字段补默认。学员端会算百分比/差值，NaN 会传染。"""
+    d = v if isinstance(v, dict) else {}
+    return {
+        "interest": _clamp_int(d.get("interest"), lo=0, hi=100, default=50),
+        "trust": _clamp_int(d.get("trust"), lo=0, hi=100, default=40),
+    }
+
+
+_PROMPT_SEED_MAX = 2000
+
+
+def _role_to_customer(r: PracticeRole) -> dict[str, Any]:
+    """把 DB 中的 PracticeRole 转成学员端 customer dict（做一次防御性归一化）。"""
+    return {
+        "id": f"role-{r.id}",
+        "name": (r.name or "客户 A")[:64],
+        "age": _clamp_int(r.age, lo=16, hi=99, default=35),
+        "job": (r.job or "")[:128],
+        "budget": (r.budget or "")[:128],
+        "family": (r.family or "")[:255],
+        "city": (r.city or "")[:64],
+        "context": (r.context or "")[:1000],
+        "avatar": (r.avatar or "客")[:16],
+        "mood": _safe_mood(r.mood),
+        "tagline": (r.tagline or "")[:255],
+        "vibe": (r.vibe or "")[:64],
+        "emoji": (r.emoji or "🙂")[:16],
+        "avatarColor": (r.avatar_color or "dark")[:32],
+        "motivation": (r.motivation or "")[:500],
+        "opener": (r.opener or "")[:200],
+        "personality": _str_list(r.personality, max_len=6, item_max_chars=24),
+        "concerns": _str_list(r.concerns, max_len=6, item_max_chars=40),
+        "promptSeed": (r.prompt_seed or "")[:_PROMPT_SEED_MAX],
     }
 
 
@@ -131,6 +188,17 @@ def _build_modules(kps: list[KpRegistry]) -> list[dict[str, Any]]:
     return modules
 
 
+async def _fetch_product_roles(
+    session: AsyncSession, product_id: int
+) -> list[PracticeRole]:
+    stmt = (
+        select(PracticeRole)
+        .where(PracticeRole.product_id == product_id)
+        .order_by(PracticeRole.is_default.desc(), PracticeRole.id)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def _fetch_product_kps(session: AsyncSession, product_id: int) -> list[KpRegistry]:
     stmt = (
         select(KpRegistry)
@@ -196,13 +264,26 @@ async def get_course(
 
     kps = await _fetch_product_kps(session, p.id)
     modules = _build_modules(kps)
-    customer = _default_customer(p)
+    roles = await _fetch_product_roles(session, p.id)
+
+    if roles:
+        customers = [_role_to_customer(r) for r in roles]
+        # 只把真实标记为 default 的那条视为默认；否则回落到模板默认，
+        # 避免「DB 没 default 但前端默默选第一条」的不变量错位
+        default_role = next((r for r in roles if r.is_default), None)
+        if default_role is not None:
+            default_customer = _role_to_customer(default_role)
+        else:
+            default_customer = _default_customer(p)
+    else:
+        default_customer = _default_customer(p)
+        customers = [default_customer]
 
     return {
         "id": p.code,
         "meta": _meta_from_product(p, len(kps)),
         "knowledge": modules,
-        "customer": customer,
-        "customers": [customer],
+        "customer": default_customer,
+        "customers": customers,
         "script": [],
     }

@@ -30,6 +30,8 @@ def _product_to_dict(p: Product, kp_count: int = 0, doc_count: int = 0) -> dict[
         "student_role": p.student_role,
         "customer_label": p.customer_label,
         "description": p.description or "",
+        "features_brief": p.features_brief or "",
+        "allow_experience_answer": bool(p.allow_experience_answer),
         "status": p.status.value if hasattr(p.status, "value") else str(p.status),
         "kp_count": kp_count,
         "doc_count": doc_count,
@@ -88,6 +90,8 @@ async def create_product(
         student_role=body.student_role,
         customer_label=body.customer_label,
         description=body.description,
+        features_brief=body.features_brief,
+        allow_experience_answer=body.allow_experience_answer,
     )
     session.add(p)
     await session.commit()
@@ -112,6 +116,10 @@ async def patch_product(
         p.customer_label = body.customer_label
     if body.description is not None:
         p.description = body.description
+    if body.features_brief is not None:
+        p.features_brief = body.features_brief
+    if body.allow_experience_answer is not None:
+        p.allow_experience_answer = bool(body.allow_experience_answer)
     if body.status is not None:
         p.status = ProductStatus(body.status)
     await session.commit()

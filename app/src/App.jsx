@@ -17,24 +17,95 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "mode": "guided",
   "difficulty": "normal",
   "path": "manual",
-  "strictMode": false
+  "strictMode": false,
+  "showStageTiming": false
 }/*EDITMODE-END*/;
 
 function emptyProgress() {
   return { learnedPoints: new Set(), practiced: false, reportReady: false, picks: [], finalMood: null };
 }
 
+// 进度持久化（S3）：演示场景用 sessionStorage 即可——关闭浏览器自然清，
+// 但刷新/接电话回来续场不丢。Set 不能直接 JSON 序列化，走 Array 兜底。
+const PROGRESS_STORAGE_KEY = 'simugo:progressByProduct:v1';
+function serializeProgress(byProduct) {
+  const out = {};
+  for (const [pid, p] of Object.entries(byProduct)) {
+    out[pid] = { ...p, learnedPoints: Array.from(p.learnedPoints || []) };
+  }
+  return out;
+}
+function deserializeProgress(raw) {
+  const out = {};
+  for (const [pid, p] of Object.entries(raw || {})) {
+    out[pid] = {
+      ...emptyProgress(),
+      ...p,
+      learnedPoints: new Set(Array.isArray(p.learnedPoints) ? p.learnedPoints : []),
+    };
+  }
+  return out;
+}
+function loadProgressFromSession() {
+  try {
+    const raw = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
+    if (!raw) return {};
+    return deserializeProgress(JSON.parse(raw));
+  } catch (e) {
+    console.warn('[App] load progress from session failed:', e);
+    return {};
+  }
+}
+function saveProgressToSession(byProduct) {
+  try {
+    sessionStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(serializeProgress(byProduct)));
+  } catch (e) {
+    console.warn('[App] save progress to session failed:', e);
+  }
+}
+
+// 深链支持（S1）：?account=xx&product=yy 直达 HomeLearn，
+// 同时切换账号/课程时把当前状态回写到 URL，便于销售保存"演示开场链接"。
+function readUrlParams() {
+  if (typeof window === 'undefined') return { account: null, product: null };
+  const sp = new URLSearchParams(window.location.search);
+  return {
+    account: sp.get('account'),
+    product: sp.get('product'),
+  };
+}
+function writeUrlParams({ account, product }) {
+  if (typeof window === 'undefined') return;
+  const sp = new URLSearchParams(window.location.search);
+  if (account) sp.set('account', account); else sp.delete('account');
+  if (product) sp.set('product', product); else sp.delete('product');
+  const qs = sp.toString();
+  const newUrl = `${window.location.pathname}${qs ? '?' + qs : ''}${window.location.hash}`;
+  window.history.replaceState(null, '', newUrl);
+}
+
 function App() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const t = useTheme(tweaks.theme);
 
-  // 账号 / 产品 / 路由
-  const [accountId, setAccountId] = useState(ACCOUNTS[0].id);
-  const [productId, setProductId] = useState(null); // null = 停在 accounts 页
+  // 账号 / 产品 / 路由：URL 参数优先
+  // product 参数不在此校验合法性——switchProduct 会走 ensureProductLoaded，
+  // 不存在/加载失败时本身已有兜底（alert + 留在 accounts），同时允许远端动态产品
+  const initial = useMemo(() => {
+    const { account, product } = readUrlParams();
+    const accountId = (account && ACCOUNT_INDEX[account]) ? account : ACCOUNTS[0].id;
+    return { accountId, productId: product || null };
+  }, []);
+
+  const [accountId, setAccountId] = useState(initial.accountId);
+  const [productId, setProductId] = useState(null); // 真正的 productId 在下方 useEffect 里激活
   const [route, setRoute] = useState('accounts');
 
-  // 进度按 product id 独立保存
-  const [progressByProduct, setProgressByProduct] = useState({});
+  // 进度按 product id 独立保存（启动时从 sessionStorage 恢复）
+  const [progressByProduct, setProgressByProduct] = useState(loadProgressFromSession);
+
+  // 任意 progress 变化都同步回 sessionStorage
+  useEffect(() => { saveProgressToSession(progressByProduct); }, [progressByProduct]);
 
   // 远端产品列表（admin 创建的产品）加载完后触发一次 re-render
   const [remoteLoaded, setRemoteLoaded] = useState(0);
@@ -76,6 +147,7 @@ function App() {
     setAccountId(aid);
     setProductId(null);
     setRoute('accounts');
+    writeUrlParams({ account: aid, product: null });
   }, []);
 
   // 切换产品：异步加载（远端产品首次进入会拉详情），再注入 window.SIMUGO_DATA
@@ -99,12 +171,23 @@ function App() {
     setProductId(pid);
     setRoute('home');
     setProgressByProduct(prev => prev[pid] ? prev : { ...prev, [pid]: emptyProgress() });
-  }, []);
+    writeUrlParams({ account: accountId, product: pid });
+  }, [accountId]);
 
   // 返回到账号首页（清空产品上下文）
   const goAccounts = useCallback(() => {
     setProductId(null);
     setRoute('accounts');
+    writeUrlParams({ account: accountId, product: null });
+  }, [accountId]);
+
+  // 启动时若 URL 带了合法的 product，自动激活并跳到 home
+  const initialProductRef = useRef(initial.productId);
+  useEffect(() => {
+    const pid = initialProductRef.current;
+    if (pid) switchProduct(pid);
+    // 仅在挂载时跑一次；switchProduct 依赖 accountId（来自 URL 已就位）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 当前账号 & 产品
@@ -138,12 +221,17 @@ function App() {
               progressByProduct={progressByProduct}
             />
           )}
-          {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} />}
+          {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} switchProduct={switchProduct} />}
           {route === 'learn'    && product && <LearningScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} highlight={highlight} product={product} />}
           {route === 'practice' && product && <PracticeScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} tweaks={tweaks} />}
           {route === 'report'   && product && <ReportScreen   t={t} state={currentProgress} go={go} />}
-          {route === 'aiqa'     && product && <AIQAScreen     t={t} go={go} contextKpId={aiqaContextKp} setContextKpId={setAiqaContextKp} initialMode={aiqaInitialMode} />}
+          {route === 'aiqa'     && product && <AIQAScreen     t={t} go={go} contextKpId={aiqaContextKp} setContextKpId={setAiqaContextKp} initialMode={aiqaInitialMode} tweaks={tweaks} />}
           {route === 'notes'    && product && <NotesScreen    t={t} go={go} />}
+
+          {/* S10：全局浮动私教入口——除 practice/aiqa/accounts 外都显示 */}
+          {product && !['practice', 'aiqa', 'accounts'].includes(route) && (
+            <FloatingTutor t={t} onClick={() => go('aiqa')} />
+          )}
         </div>
       </div>
 
@@ -164,6 +252,9 @@ function App() {
           onChange={(v) => setTweak('path', v)} />
         <TweakToggle label="严苛模式（无弹药提示）" value={tweaks.strictMode}
           onChange={(v) => setTweak('strictMode', v)} />
+        <TweakSection label="研发调试" />
+        <TweakToggle label="显示 AI 答疑阶段耗时（dev）" value={tweaks.showStageTiming}
+          onChange={(v) => setTweak('showStageTiming', v)} />
         <TweakSection label="快捷" />
         <TweakButton label="一键学完当前产品全部知识点" onClick={() => {
           if (!product) return;
@@ -175,12 +266,43 @@ function App() {
           setProgressByProduct({});
           setProductId(null);
           setRoute('accounts');
+          writeUrlParams({ account: null, product: null });
         }} />
       </TweaksPanel>
     </>
   );
 }
 
+
+// S10：右下角常驻私教按钮。位置 fixed，避开底部 BottomCTA 时的滚动条；
+// 仅在 home/learn/report/notes 显示——practice 是沉浸态，aiqa 自己就是目的地。
+function FloatingTutor({ t, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        position: 'absolute', right: 18, bottom: 22, zIndex: 30,
+        width: 56, height: 56, borderRadius: 999,
+        background: `linear-gradient(135deg, ${t.accent}, ${t.accentSoft})`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer',
+        boxShadow: `5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55`,
+        animation: 'simugoTutorPulse 2.4s ease-in-out infinite',
+      }}
+      title="问 AI 私教"
+    >
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
+      </svg>
+      <style>{`
+        @keyframes simugoTutorPulse {
+          0%, 100% { box-shadow: 5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55; }
+          50%      { box-shadow: 5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 10px ${t.accent}00; }
+        }
+      `}</style>
+    </div>
+  );
+}
 
 function GlobalStyle({ t }) {
   return <style>{`

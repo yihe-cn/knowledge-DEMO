@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from ..graphs._retrieval import RetrievalError, UnknownProductError
+from ..graphs.evaluation_graph import run_evaluation
 from ..graphs.practice_graph import coach_model, customer_model, prepare
 from ..graphs.suggestor_graph import GenerationError, generate_suggestions
 from ..json_utils import parse_llm_json
-from ..schemas import PracticeSuggestRequest, PracticeTurnRequest
+from ..schemas import PracticeEvaluateRequest, PracticeSuggestRequest, PracticeTurnRequest
 from ..security import require_internal_token
 from ..sse import sse_event
 
@@ -18,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# /practice/suggest 走 RAG（拉 KB chunk + 调 LLM），独立放进带鉴权的 router
+# /practice/suggest 和 /practice/evaluate 都直接调 LLM、成本敏感，
+# 放进带鉴权的 router（require_internal_token）。
 suggest_router = APIRouter(dependencies=[Depends(require_internal_token)])
 
 
@@ -75,6 +77,19 @@ async def practice_turn(req: PracticeTurnRequest):
             yield sse_event("done", {})
 
     return EventSourceResponse(gen())
+
+
+@suggest_router.post("/practice/evaluate")
+async def practice_evaluate(req: PracticeEvaluateRequest) -> dict:
+    """整场练后评估报告。非流式，一次性返回完整 JSON。
+
+    错误语义：内部异常一律 503 + 通用文案，原始细节只写日志，不回给前端。
+    """
+    try:
+        return await run_evaluation(req)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("practice_evaluate failed: %s", e)
+        raise HTTPException(status_code=503, detail="评估生成暂时不可用，请稍后再试")
 
 
 @suggest_router.post("/practice/suggest")

@@ -43,6 +43,16 @@ class PracticeTurnRequest(BaseModel):
     kp_list: list[dict[str, Any]] = Field(default_factory=list)  # [{id, summary}]
 
 
+class PracticeEvaluateRequest(BaseModel):
+    """练后评估报告请求：把整场 picks + 上下文交给后端 Graph。"""
+    customer: dict[str, Any] = Field(default_factory=dict)
+    picks: list[dict[str, Any]] = Field(default_factory=list)
+    kp_list: list[dict[str, Any]] = Field(default_factory=list)
+    final_mood: dict[str, float] = Field(default_factory=lambda: {"interest": 50, "trust": 50})
+    viewed_kp: list[str] = Field(default_factory=list)
+    product_code: str | None = None
+
+
 class PracticeSuggestRequest(BaseModel):
     """点 ✦ 时拉一组回应思路（独立于 turn 接口）。"""
     customer: dict[str, Any]
@@ -153,6 +163,8 @@ class ProductOut(BaseModel):
     student_role: str = ""
     customer_label: str = ""
     description: str = ""
+    features_brief: str = ""
+    allow_experience_answer: bool = True
     status: str = "active"
     kp_count: int = 0
     doc_count: int = 0
@@ -167,6 +179,8 @@ class ProductCreate(BaseModel):
     student_role: str = ""
     customer_label: str = ""
     description: str = ""
+    features_brief: str = ""
+    allow_experience_answer: bool = True
 
 
 class ProductPatch(BaseModel):
@@ -175,6 +189,8 @@ class ProductPatch(BaseModel):
     student_role: str | None = None
     customer_label: str | None = None
     description: str | None = None
+    features_brief: str | None = None
+    allow_experience_answer: bool | None = None
     status: Literal["active", "archived"] | None = None
 
 

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
 import { MissedHint, AmmoStrip, KnowledgeLibrarySheet, KpDetailModal } from "./PracticeKnowledge.jsx";
-import { streamChat, postJSON } from "../lib/llmClient.js";
+import { streamChat, postJSON, evaluatePractice } from "../lib/llmClient.js";
 
 function PracticeScreen({ t, state, setState, go, tweaks }) {
   const { CUSTOMER, CUSTOMERS, CUSTOMER_INDEX, SCRIPT, KP_INDEX, PRODUCT } = window.SIMUGO_DATA;
@@ -26,6 +26,10 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   const [hintsLoading, setHintsLoading] = useState(false);
   const [hintsError, setHintsError] = useState('');
   const [hintsMeta, setHintsMeta] = useState([]);   // cites_meta — 显示"依据 N 条资料"
+  // 加载态感知：阶段文案 / 假进度 / 已等待秒数
+  const [hintStage, setHintStage] = useState(0);
+  const [hintProgress, setHintProgress] = useState(0);
+  const [hintElapsed, setHintElapsed] = useState(0);
   const hintReqRef = useRef({ seq: 0, controller: null });
   const [showProfile, setShowProfile] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);     // 📚 full ammo library
@@ -33,6 +37,9 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   const [viewedKp, setViewedKp] = useState(() => new Set()); // KPs the student opened
   const [showKpPop, setShowKpPop] = useState(null);
   const [finished, setFinished] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);   // 后端正在生成评估报告
+  const [evalError, setEvalError] = useState('');
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const scrollRef = useRef(null);
   const sendingRef = useRef(false);  // 同步守卫
 
@@ -118,6 +125,42 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
     setHintsError('');
     setHintsLoading(false);
   }, [lastCustomerText]);
+
+  // 加载态期间推进阶段文案、假进度条、计时器；hintsLoading 切回 false 时统一清理
+  useEffect(() => {
+    if (!hintsLoading) {
+      setHintStage(0);
+      setHintProgress(0);
+      setHintElapsed(0);
+      return undefined;
+    }
+    const t0 = Date.now();
+    const stageTimer = setInterval(() => {
+      const dt = (Date.now() - t0) / 1000;
+      setHintStage(dt < 2.5 ? 0 : dt < 6 ? 1 : 2);
+    }, 200);
+    const progTimer = setInterval(() => {
+      setHintProgress(p => p + (0.92 - p) * 0.015);
+    }, 100);
+    const tickTimer = setInterval(() => {
+      setHintElapsed(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    return () => {
+      clearInterval(stageTimer);
+      clearInterval(progTimer);
+      clearInterval(tickTimer);
+    };
+  }, [hintsLoading]);
+
+  const cancelHints = useCallback(() => {
+    if (hintReqRef.current.controller) {
+      hintReqRef.current.controller.abort();
+      hintReqRef.current.controller = null;
+    }
+    hintReqRef.current.seq += 1;
+    setHintsLoading(false);
+    setHintsError('已取消，可重新点 ✦ 生成');
+  }, []);
 
   const fetchHints = useCallback(async () => {
     if (hintsLoading) return;
@@ -309,17 +352,63 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
     }, 1000);
   };
 
-  const finishSession = (lastPick) => {
+  const confirmFinish = () => {
+    setShowFinishConfirm(false);
+    finishSession(null);
+  };
+
+  const finishSession = async (lastPick) => {
     const latestPicks = picksRef.current;
     const finalPicks = lastPick ? [...latestPicks, lastPick] : latestPicks;
     setFinished(true);
+
+    // 先落 picks + finalMood + viewedKp，保证哪怕评估接口挂了也能 fallback 本地计算
     setState(s => ({
       ...s,
       practiced: true,
-      reportReady: true,
+      reportReady: false,
       picks: finalPicks,
       finalMood: mood,
+      viewedKp: Array.from(viewedKp),
+      report: null,
     }));
+
+    // 拼装 kp_list — 给后端 enrich 用到 module/point title/tier
+    const kpList = Object.entries(KP_INDEX).map(([id, ref]) => ({
+      id,
+      summary: `${ref.module.title}-${ref.point.title} (${ref.point.spec || ''})`.trim(),
+      module_title: ref.module.title,
+      point_title: ref.point.title,
+      tier: ref.point.tier || '',
+    }));
+
+    setEvaluating(true);
+    setEvalError('');
+    // 60s 超时：避免 LLM 卡死把 UI 永久 disabled
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    try {
+      const report = await evaluatePractice({
+        customer: currentCustomer,
+        picks: finalPicks,
+        kp_list: kpList,
+        final_mood: mood,
+        viewed_kp: Array.from(viewedKp),
+        product_code: PRODUCT?.id || null,
+      }, controller.signal);
+      setState(s => ({ ...s, report, reportReady: true }));
+    } catch (e) {
+      console.error('evaluate failed:', e);
+      const msg = e?.name === 'AbortError'
+        ? '评估超时（>60s），已切换到本地兜底'
+        : '评估生成失败，已切换到本地兜底';
+      setEvalError(msg);
+      // 即便失败也允许进 report 页（前端 fallback 到本地计算）
+      setState(s => ({ ...s, report: null, reportReady: true }));
+    } finally {
+      clearTimeout(timeoutId);
+      setEvaluating(false);
+    }
   };
 
   // Mirror viewed-KP set into shared state so the report can show coverage.
@@ -357,7 +446,10 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
       {/* Chat scroll */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '4px 16px 14px', display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
         <ScenarioBrief t={t} started={started} onStart={startSession} customer={currentCustomer}
-          customers={CUSTOMERS} onPickCustomer={setCustomerId} isZheng={isZheng} />
+          customers={CUSTOMERS} onPickCustomer={setCustomerId} isZheng={isZheng}
+          canFinish={started && !finished && !thinking && picks.length >= 3}
+          turnsDone={picks.length}
+          onRequestFinish={() => setShowFinishConfirm(true)} />
         {history.map((m, i) => (
           <React.Fragment key={i}>
             <ChatBubble t={t} m={m} />
@@ -388,6 +480,8 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
           t={t} input={input} setInput={setInput} onSend={sendOpen}
           showHints={showHints} toggleHints={toggleHints}
           hints={hints} hintsLoading={hintsLoading} hintsError={hintsError} hintsMeta={hintsMeta}
+          hintStage={hintStage} hintProgress={hintProgress} hintElapsed={hintElapsed}
+          onCancelHints={cancelHints}
           onPickHint={(opt) => {
             setInput(opt.text);
             setShowHints(false);
@@ -401,11 +495,25 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
       ) : (
         <div style={{ padding: '12px 18px 22px' }}>
           <div style={{ ...neuRaised(t, 22, 1.2), padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, color: t.textSoft }}>演练完成</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: t.text }}>评估报告已生成</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: t.text }}>
+                {evaluating ? 'AI 教练正在生成评估…' : evalError ? '评估生成失败' : '评估报告已生成'}
+              </div>
+              {evaluating && (
+                <div style={{ fontSize: 11, color: t.textMute, marginTop: 4 }}>
+                  正在分析整场对话与知识点覆盖，通常 3–10 秒
+                </div>
+              )}
+              {!!evalError && !evaluating && (
+                <div style={{ fontSize: 11, color: t.bad, marginTop: 4 }}>
+                  {evalError} · 将使用本地兜底计算
+                </div>
+              )}
             </div>
-            <PillButton t={t} primary onClick={() => go('report')}>查看评估 →</PillButton>
+            <PillButton t={t} primary disabled={evaluating} onClick={() => !evaluating && go('report')}>
+              {evaluating ? '生成中…' : '查看评估 →'}
+            </PillButton>
           </div>
         </div>
       )}
@@ -430,6 +538,16 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
           t={t} kpId={kpDetailId}
           cited={citedKp.has(kpDetailId)}
           onClose={() => setKpDetailId(null)}
+        />
+      )}
+
+      {/* End-session confirm sheet */}
+      {showFinishConfirm && (
+        <FinishConfirmSheet
+          t={t}
+          turns={picks.length}
+          onCancel={() => setShowFinishConfirm(false)}
+          onConfirm={confirmFinish}
         />
       )}
     </div>
@@ -503,7 +621,7 @@ function fallbackTurn(studentText, partialReply) {
 }
 
 // ─── Scenario brief — opening mission card ─────────────────
-function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustomer, isZheng }) {
+function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustomer, isZheng, canFinish, turnsDone, onRequestFinish }) {
   const productMeta = window.SIMUGO_DATA?.PRODUCT?.meta || {};
   const storeContext = productMeta.storeContext || '前滩门店 · 周六下午';
   const storeShort = storeContext.split('·')[0].trim();
@@ -516,15 +634,19 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
 
   // ── Collapsed pill once conversation has begun ──────────
   if (started) {
+    const finishTitle = canFinish
+      ? '结束本场演练并生成评估报告'
+      : `至少完成 3 轮对话后可结束（当前 ${turnsDone || 0} 轮）`;
     return (
       <div style={{ marginBottom: 6 }}>
+       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <div
           onClick={() => setExpanded(e => !e)}
           style={{
             ...neuFlat(t, 999),
             padding: '7px 10px 7px 8px',
             display: 'flex', alignItems: 'center', gap: 8,
-            cursor: 'pointer',
+            cursor: 'pointer', flex: 1, minWidth: 0,
             background: `linear-gradient(135deg, ${t.surface}, ${t.surface2})`,
             transition: 'all .25s ease',
           }}
@@ -546,6 +668,30 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
             <Icon name="arrow" size={11} color={t.textMute} />
           </span>
         </div>
+        <button
+          onClick={canFinish ? onRequestFinish : undefined}
+          disabled={!canFinish}
+          title={finishTitle}
+          style={{
+            ...neuFlat(t, 999),
+            padding: '7px 12px',
+            border: 0,
+            display: 'flex', alignItems: 'center', gap: 5,
+            cursor: canFinish ? 'pointer' : 'not-allowed',
+            opacity: canFinish ? 1 : 0.4,
+            background: canFinish
+              ? `linear-gradient(135deg, ${t.accent}18, ${t.surface2})`
+              : t.surface,
+            color: canFinish ? t.accent : t.textMute,
+            fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+            fontFamily: 'inherit',
+            transition: 'all .2s ease',
+          }}
+        >
+          <Icon name="check" size={11} color={canFinish ? t.accent : t.textMute} stroke={2} />
+          结束
+        </button>
+       </div>
 
         {expanded && (
           <div style={{
@@ -879,7 +1025,7 @@ function KnowledgePopup({ t, kpId }) {
 }
 
 // ─── Bottom bar: hints + input ─────────────────────────────
-function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, hintsLoading, hintsError, hintsMeta, onPickHint, onOpenLibrary, autoPath, disabled, started, thinking }) {
+function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, hintsLoading, hintsError, hintsMeta, hintStage, hintProgress, hintElapsed, onCancelHints, onPickHint, onOpenLibrary, autoPath, disabled, started, thinking }) {
   const hintBtnDisabled = !started || thinking;
   const inputRef = useRef(null);
   return (
@@ -893,26 +1039,61 @@ function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, 
                 {hintsLoading ? 'AI 正在生成思路…' : '回应思路提示'}
               </span>
             </div>
-            <span style={{ fontSize: 10, color: t.textMute }}>
-              {hintsLoading ? '基于当前对话实时生成' : '点击思路填入输入框'}
-            </span>
+            {hintsLoading ? (
+              hintElapsed >= 8 ? (
+                <button
+                  onClick={onCancelHints}
+                  style={{
+                    fontSize: 10, color: t.textMute, background: 'transparent',
+                    border: 0, cursor: 'pointer', padding: '2px 6px',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  取消
+                </button>
+              ) : (
+                <span style={{ fontSize: 10, color: t.textMute }}>
+                  已等待 {hintElapsed}s
+                </span>
+              )
+            ) : (
+              <span style={{ fontSize: 10, color: t.textMute }}>点击思路填入输入框</span>
+            )}
           </div>
           {hintsLoading && hints.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {[0, 1, 2].map(i => (
-                <div key={i} style={{
-                  ...neuFlat(t, 14), padding: '10px 12px',
-                  opacity: 0.6,
+            <div style={{ ...neuFlat(t, 14), padding: '14px 14px 12px' }}>
+              <div style={{
+                height: 3, borderRadius: 2, background: t.line, overflow: 'hidden', marginBottom: 12,
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${Math.min(100, Math.max(2, hintProgress * 100))}%`,
+                  background: t.accent,
+                  borderRadius: 2,
+                  transition: 'width 0.18s ease-out',
+                }} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block', width: 18, textAlign: 'center', fontSize: 13,
                 }}>
-                  <div style={{ height: 10, width: '38%', background: t.line, borderRadius: 4, marginBottom: 8,
-                    animation: `hintShimmer 1.4s ${i * 0.15}s infinite ease-in-out` }} />
-                  <div style={{ height: 8, width: '92%', background: t.line, borderRadius: 4, marginBottom: 5,
-                    animation: `hintShimmer 1.4s ${i * 0.15 + 0.1}s infinite ease-in-out` }} />
-                  <div style={{ height: 8, width: '68%', background: t.line, borderRadius: 4,
-                    animation: `hintShimmer 1.4s ${i * 0.15 + 0.2}s infinite ease-in-out` }} />
+                  {hintStage === 0 ? '🔍' : hintStage === 1 ? '👤' : '✦'}
+                </span>
+                <span style={{ fontSize: 12.5, color: t.textSoft, fontWeight: 500 }}>
+                  {hintStage === 0
+                    ? '正在检索知识库…'
+                    : hintStage === 1
+                    ? '正在分析客户当前态度…'
+                    : '正在生成回应思路…'}
+                </span>
+              </div>
+              {hintElapsed >= 15 && (
+                <div style={{
+                  marginTop: 8, fontSize: 10.5, color: t.textMute, lineHeight: 1.5,
+                }}>
+                  AI 在深入思考，通常需要 10–25 秒，请稍候
                 </div>
-              ))}
-              <style>{`@keyframes hintShimmer{0%,100%{opacity:.35}50%{opacity:.85}}`}</style>
+              )}
             </div>
           ) : hintsError ? (
             <div style={{
@@ -1153,6 +1334,50 @@ function ProfileSection({ t, title, icon, children }) {
         <span style={{ fontSize: 11, fontWeight: 700, color: t.textSoft, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{title}</span>
       </div>
       {children}
+    </div>
+  );
+}
+
+// ─── Finish-session confirm sheet ─────────────────────────
+function FinishConfirmSheet({ t, turns, onCancel, onConfirm }) {
+  return (
+    <div onClick={onCancel} style={{
+      position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)',
+      backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+      zIndex: 60, display: 'flex', alignItems: 'flex-end',
+      animation: 'sheetFadeIn .2s ease',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: t.bg, width: '100%',
+        borderTopLeftRadius: 28, borderTopRightRadius: 28,
+        padding: '12px 20px 28px',
+        boxShadow: `0 -10px 30px rgba(0,0,0,0.2)`,
+        animation: 'sheetSlideUp .28s cubic-bezier(.22,.61,.36,1)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0 14px' }}>
+          <div style={{ width: 42, height: 5, borderRadius: 999, background: t.textMute, opacity: 0.4 }} />
+        </div>
+        <div style={{ fontSize: 19, fontWeight: 700, color: t.text, marginBottom: 8 }}>
+          结束本场演练？
+        </div>
+        <div style={{ fontSize: 13, color: t.textSoft, lineHeight: 1.65, marginBottom: 18 }}>
+          评估报告将基于已完成的 <b style={{ color: t.accent }}>{turns}</b> 轮对话生成，结束后无法继续与客户对话。
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={onCancel} style={{
+            flex: 1, height: 46, borderRadius: 14, border: 0,
+            background: t.surface, color: t.text,
+            fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            boxShadow: `3px 3px 6px ${t.sDark}, -2px -2px 4px ${t.sLight}`,
+          }}>再聊聊</button>
+          <button onClick={onConfirm} style={{
+            flex: 1.2, height: 46, borderRadius: 14, border: 0,
+            background: `linear-gradient(135deg, ${t.accent}, ${t.accent}cc)`,
+            color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+            boxShadow: `3px 3px 8px ${t.sDark}, inset 0 1px 0 rgba(255,255,255,0.22)`,
+          }}>确认结束 · 生成报告</button>
+        </div>
+      </div>
     </div>
   );
 }

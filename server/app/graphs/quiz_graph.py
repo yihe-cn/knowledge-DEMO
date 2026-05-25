@@ -40,9 +40,30 @@ def _gen_system(req: QuizGenerateRequest) -> str:
 【知识范围】
 {compact}
 
-【严格 JSON 输出，不要 markdown 代码块】
+【每题还要给 3 个"销售可能这样答"的参考选项 suggestedOptions（用于学员"看选项"对比学习）】
+- 必须紧扣这一题客户问的内容 + 关联 KP，不要空泛，不要换题目
+- 三档语义（必须真有差异，不能只是同一答案改写）：
+  - good：抓住客户真实顾虑，给出具体数据/机制 + 共情，是标杆答案的精简版
+  - mid：只复述参数事实，没接住客户的情绪/场景，听起来像背产品手册
+  - bad：销售常犯的错——套话/打包票/贬低同行/转移话题，例如"您放心""我们最专业""别家都不行"
+- 三档都要贴合当前客户人设的口吻和称呼习惯
+- 每个 text ≤ 60 字，一句话即可
+
+【硬性校验规则 —— 必须满足，否则输出无效】
+- `questions` 数组长度严格等于 {req.count}
+- 每题必须包含 `suggestedOptions` 字段，长度严格等于 3
+- 三个 quality 值必须分别是 "good"、"mid"、"bad"，不能重复、不能缺、不能换值
+- 每个 option.text 非空且 ≤ 60 字
+- 只输出 JSON，不要任何额外解释、注释或 markdown 代码块、不要额外字段
+
+【严格 JSON 输出】
 {{"questions": [
-  {{"id": "q1", "text": "客户问题文本", "type": "参数|异议|对比|应用", "primaryKpId": "kpX-Y", "tone": "neutral|concern|challenge|interested"}}
+  {{"id": "q1", "text": "客户问题文本", "type": "参数|异议|对比|应用", "primaryKpId": "kpX-Y", "tone": "neutral|concern|challenge|interested",
+    "suggestedOptions": [
+      {{"quality": "good", "text": "..."}},
+      {{"quality": "mid",  "text": "..."}},
+      {{"quality": "bad",  "text": "..."}}
+    ]}}
 ]}}"""
 
 

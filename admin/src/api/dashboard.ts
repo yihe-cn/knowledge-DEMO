@@ -1,7 +1,9 @@
 import { api } from './client';
 
-export async function getOverview() {
-  const { data } = await api.get('/dashboard/overview');
+export async function getOverview(params: { product_id?: number | null } = {}) {
+  const finalParams: any = {};
+  if (params.product_id != null) finalParams.product_id = params.product_id;
+  const { data } = await api.get('/dashboard/overview', { params: finalParams });
   return data;
 }
 
@@ -10,8 +12,12 @@ export async function getKpMap() {
   return data.items;
 }
 
-export async function getAttention() {
-  const { data } = await api.get<{ items: any[]; total: number }>('/dashboard/attention');
+export async function getAttention(params: { product_id?: number | null } = {}) {
+  const finalParams: any = {};
+  if (params.product_id != null) finalParams.product_id = params.product_id;
+  const { data } = await api.get<{ items: any[]; total: number }>('/dashboard/attention', {
+    params: finalParams,
+  });
   return data;
 }
 

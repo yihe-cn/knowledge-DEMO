@@ -19,7 +19,7 @@ class UnknownProductError(ValueError):
     """传了 product_code 但 DB 里查不到。route 层应转 400。"""
 
 
-_FENCE_RE = re.compile(r"</(CTX|CAND|DOC|DIALOG|KP|KPMETA|PERSONA)-[A-Za-z0-9]+>")
+_FENCE_RE = re.compile(r"</(CTX|CAND|DOC|DIALOG|KP|KPMETA|PERSONA|BRIEF|Q|A|S)-[A-Za-z0-9]+>")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -163,6 +163,148 @@ async def retrieve_chunks(
             {
                 "chunk_id": chunk.id,
                 "score": h["score"],
+                "doc_id": doc.id,
+                "doc_name": doc.file_name,
+                "slide_indices": slide_indices,
+                "text": chunk.text,
+                "kps": kp_per_chunk.get(chunk.id, []),
+            }
+        )
+    return candidates
+
+
+async def _resolve_product_doc_ids(product_code: str | None) -> tuple[int | None, list[int] | None]:
+    """把 product_code 解析成 (product_id, doc_id 列表)。
+    返回 (None, None) 表示无产品过滤；(id, []) 表示产品存在但没文档；抛 UnknownProductError 表示产品不存在。
+    """
+    if not product_code:
+        return None, None
+    try:
+        async with SessionLocal() as session:
+            pid = (
+                await session.execute(select(Product.id).where(Product.code == product_code))
+            ).scalar_one_or_none()
+            if pid is None:
+                raise UnknownProductError(f"product_code={product_code!r} 不存在")
+            doc_ids = [
+                int(d)
+                for d in (
+                    await session.execute(
+                        select(KbDocument.id).where(KbDocument.product_id == pid)
+                    )
+                ).scalars().all()
+            ]
+            return int(pid), doc_ids
+    except UnknownProductError:
+        raise
+    except Exception as e:
+        raise RetrievalError(f"DB 查询失败: {e}") from e
+
+
+async def _hydrate_chunks(chunk_ids: list[int], product_id: int | None) -> tuple[dict, dict]:
+    """把 chunk_ids 拉成 (chunk_map, kp_per_chunk)。chunk_map: {chunk_id: (chunk, doc)}。"""
+    try:
+        async with SessionLocal() as session:
+            chunk_stmt = (
+                select(KbChunk, KbDocument)
+                .join(KbDocument, KbDocument.id == KbChunk.doc_id)
+                .where(KbChunk.id.in_(chunk_ids))
+            )
+            if product_id is not None:
+                # 防 TOCTOU：Milvus 检索后、SQL 取详情前，若管理员把某个 doc 改到别的 product，
+                # 必须按"当前 DB 里 doc 真实属于的 product_id"再过滤一次。
+                chunk_stmt = chunk_stmt.where(KbDocument.product_id == product_id)
+            rows = (await session.execute(chunk_stmt)).all()
+            chunk_map = {c.id: (c, d) for c, d in rows}
+
+            kp_links = (
+                await session.execute(
+                    select(KpChunkLink, KpRegistry)
+                    .join(KpRegistry, KpRegistry.id == KpChunkLink.kp_id)
+                    .where(KpChunkLink.chunk_id.in_(chunk_ids))
+                    .where(KpRegistry.status == KpStatus.approved)
+                )
+            ).all()
+            kp_per_chunk: dict[int, list[dict]] = {}
+            for link, kp in kp_links:
+                kp_per_chunk.setdefault(link.chunk_id, []).append(
+                    {"kp_id": kp.id, "name": kp.name, "link_relevance": float(link.relevance or 0.0)}
+                )
+            return chunk_map, kp_per_chunk
+    except Exception as e:
+        raise RetrievalError(f"DB 查询失败: {e}") from e
+
+
+async def retrieve_chunks_multi(
+    queries: list[str],
+    product_code: str | None = None,
+    top_k_per: int = 8,
+    top_k_total: int = 12,
+) -> list[dict]:
+    """多 query 并行检索：embed 一次 batch、Milvus 并行 search、合并去重（score=max）。
+
+    - queries 为空或全空 → []
+    - product_code 不存在 → UnknownProductError
+    - 任一基础设施故障 → RetrievalError
+    """
+    cleaned = [q.strip() for q in (queries or []) if q and q.strip()]
+    # 去重（保持顺序）
+    seen: set[str] = set()
+    cleaned = [q for q in cleaned if not (q in seen or seen.add(q))]
+    if not cleaned:
+        return []
+
+    try:
+        vecs = await embed(cleaned)
+    except Exception as e:
+        raise RetrievalError(f"embedding 失败: {e}") from e
+    if not vecs or len(vecs) != len(cleaned):
+        raise RetrievalError("embedding 返回数量不匹配")
+
+    product_id, product_doc_ids = await _resolve_product_doc_ids(product_code)
+    if product_code and product_doc_ids is not None and not product_doc_ids:
+        return []
+
+    try:
+        hits_per_query = await asyncio.gather(
+            *[asyncio.to_thread(milvus_search, v, top_k_per, None, product_doc_ids) for v in vecs]
+        )
+    except Exception as e:
+        raise RetrievalError(f"Milvus 检索失败: {e}") from e
+
+    # 合并：按 chunk_id 取 max score
+    merged: dict[int, float] = {}
+    for hits in hits_per_query:
+        for h in hits or []:
+            cid = h["chunk_id"]
+            s = float(h.get("score") or 0.0)
+            if cid not in merged or merged[cid] < s:
+                merged[cid] = s
+    if not merged:
+        return []
+
+    chunk_map, kp_per_chunk = await _hydrate_chunks(list(merged.keys()), product_id)
+
+    # 按合并 score 降序、截 top_k_total
+    ordered_cids = sorted(merged.keys(), key=lambda c: merged[c], reverse=True)
+    candidates: list[dict] = []
+    for cid in ordered_cids:
+        if len(candidates) >= top_k_total:
+            break
+        pair = chunk_map.get(cid)
+        if not pair:
+            continue
+        chunk, doc = pair
+        meta = chunk.meta or {}
+        slide_indices = [
+            int(s)
+            for s in (meta.get("slide_indices") or [])
+            if isinstance(s, (int, str)) and str(s).lstrip("-").isdigit()
+        ]
+        candidates.append(
+            {
+                "chunk_id": chunk.id,
+                "score": merged[cid],
                 "doc_id": doc.id,
                 "doc_name": doc.file_name,
                 "slide_indices": slide_indices,

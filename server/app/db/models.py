@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -52,6 +53,11 @@ class ProductLinkSource(str, enum.Enum):
     manual = "manual"
 
 
+class PracticeRoleSource(str, enum.Enum):
+    ai = "ai"
+    manual = "manual"
+
+
 class Product(Base):
     """业务产品维度。对应学员端 productCatalog 里的一个产品（如极氪 007、宝怡乐 PAX）。"""
 
@@ -64,6 +70,12 @@ class Product(Base):
     student_role: Mapped[str] = mapped_column(String(64), default="")
     customer_label: Mapped[str] = mapped_column(String(64), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    # 产品/行业特征简介：KB 未命中时喂给经验回答模型作为背景上下文。
+    # 留空 = 该产品不启用经验回答（即便 allow_experience_answer=True）。
+    features_brief: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    allow_experience_answer: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="1"
+    )
     status: Mapped[ProductStatus] = mapped_column(
         Enum(ProductStatus, native_enum=False, length=16),
         default=ProductStatus.active,
@@ -197,3 +209,47 @@ class KpExtractionJob(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PracticeRole(Base):
+    """产品下的演练角色（客户人设）。一个产品有 1 个 default + 多个备选。"""
+
+    __tablename__ = "practice_role"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    product_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("product.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    name: Mapped[str] = mapped_column(String(64), default="")
+    age: Mapped[int] = mapped_column(Integer, default=35)
+    job: Mapped[str] = mapped_column(String(128), default="")
+    city: Mapped[str] = mapped_column(String(64), default="")
+    family: Mapped[str] = mapped_column(String(255), default="")
+    budget: Mapped[str] = mapped_column(String(128), default="")
+
+    tagline: Mapped[str] = mapped_column(String(255), default="")
+    vibe: Mapped[str] = mapped_column(String(64), default="")
+    emoji: Mapped[str] = mapped_column(String(16), default="🙂")
+    avatar: Mapped[str] = mapped_column(String(16), default="客")
+    avatar_color: Mapped[str] = mapped_column(String(32), default="dark")
+
+    motivation: Mapped[str] = mapped_column(Text, default="")
+    opener: Mapped[str] = mapped_column(Text, default="")
+    context: Mapped[str] = mapped_column(Text, default="")
+    prompt_seed: Mapped[str] = mapped_column(Text, default="")
+
+    personality: Mapped[list] = mapped_column(JSON, default=list)
+    concerns: Mapped[list] = mapped_column(JSON, default=list)
+    mood: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    source: Mapped[PracticeRoleSource] = mapped_column(
+        Enum(PracticeRoleSource, native_enum=False, length=16),
+        default=PracticeRoleSource.ai,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

@@ -36,6 +36,37 @@ const Notes = {
     }
     return note;
   },
+  // S9：把某条 AI 回答连同对应的用户提问单独收藏一条（type='starred'）。
+  // 区别于 type='chat' 的自动 session 留存：starred 是用户主动行为，
+  // NotesScreen 单列一类展示。同一答案重复点击会去重（按 messageId）。
+  star({ messageId, question, answer, contextKpId, ragCitations, citations, taggedKps }) {
+    const all = Notes.load();
+    if (messageId && all.some(n => n.type === 'starred' && n.messageId === messageId)) {
+      return null; // 已收藏，不重复入库
+    }
+    const note = {
+      id: `star-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'starred',
+      messageId,
+      question,
+      answer,
+      contextKpId: contextKpId || null,
+      ragCitations: ragCitations || [],
+      citations: citations || [],
+      taggedKps: taggedKps || [],
+      timestamp: Date.now(),
+    };
+    Notes.save([note, ...all]);
+    return note;
+  },
+  unstar(messageId) {
+    if (!messageId) return;
+    Notes.save(Notes.load().filter(n => !(n.type === 'starred' && n.messageId === messageId)));
+  },
+  isStarred(messageId) {
+    if (!messageId) return false;
+    return Notes.load().some(n => n.type === 'starred' && n.messageId === messageId);
+  },
   remove(id) {
     Notes.save(Notes.load().filter(n => n.id !== id));
   },
@@ -87,6 +118,7 @@ function NotesScreen({ t, go }) {
 
   const counts = useMemo(() => ({
     all: notes.length,
+    starred: notes.filter(n => n.type === 'starred').length,
     chat: notes.filter(n => n.type === 'chat').length,
     quiz: notes.filter(n => n.type === 'quiz').length,
   }), [notes]);
@@ -131,6 +163,7 @@ function NotesScreen({ t, go }) {
         <div style={{ ...neuInset(t, 14, 0.6), padding: 3, display: 'flex', gap: 3 }}>
           {[
             { v: 'all', label: '全部', n: counts.all },
+            { v: 'starred', label: '⭐ 收藏', n: counts.starred },
             { v: 'chat', label: '💬 答疑', n: counts.chat },
             { v: 'quiz', label: '⚡ 突击', n: counts.quiz },
           ].map(o => {
@@ -199,10 +232,15 @@ function NotesEmpty({ t, filter, go }) {
 function NoteCard({ t, note, onOpen, onDelete }) {
   const isChat = note.type === 'chat';
   const isQuiz = note.type === 'quiz';
-  const tagColor = isChat ? t.accent : t.warn;
+  const isStarred = note.type === 'starred';
+  const tagColor = isStarred ? t.warn : (isChat ? t.accent : t.warn);
 
   let title, sub, badge;
-  if (isChat) {
+  if (isStarred) {
+    title = note.question || '收藏的回答';
+    sub = (note.answer || '').replace(/\s+/g, ' ').slice(0, 60);
+    badge = '⭐ 收藏';
+  } else if (isChat) {
     const firstUserMsg = (note.messages || []).find(m => m.role === 'user');
     title = firstUserMsg ? firstUserMsg.text : '答疑对话';
     sub = `${(note.messages || []).filter(m => m.role === 'user').length} 个提问`;
@@ -228,7 +266,7 @@ function NoteCard({ t, note, onOpen, onDelete }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 17,
       }}>
-        {isChat ? '💬' : '⚡'}
+        {isStarred ? '⭐' : isChat ? '💬' : '⚡'}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -288,7 +326,7 @@ function NoteDetailSheet({ t, note, onClose, onDelete }) {
         </div>
         <div style={{ padding: '0 22px 8px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>
-            {note.type === 'chat' ? '💬 答疑回顾' : '⚡ 突击回顾'}
+            {note.type === 'starred' ? '⭐ 收藏回顾' : note.type === 'chat' ? '💬 答疑回顾' : '⚡ 突击回顾'}
           </div>
           <div style={{ fontSize: 11, color: t.textMute, flex: 1 }}>{formatTime(note.timestamp, true)}</div>
           <div onClick={onDelete} style={{
@@ -297,12 +335,59 @@ function NoteDetailSheet({ t, note, onClose, onDelete }) {
           }}>删除</div>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 22px 26px' }}>
-          {note.type === 'chat' ? <ChatReplay t={t} note={note} /> : <QuizReplay t={t} note={note} />}
+          {note.type === 'starred' ? <StarredReplay t={t} note={note} />
+            : note.type === 'chat' ? <ChatReplay t={t} note={note} />
+            : <QuizReplay t={t} note={note} />}
         </div>
         <style>{`
           @keyframes notesFadeIn { from { opacity: 0; } to { opacity: 1; } }
           @keyframes notesSlideUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         `}</style>
+      </div>
+    </div>
+  );
+}
+
+function StarredReplay({ t, note }) {
+  const kp = note.contextKpId ? window.SIMUGO_DATA.KP_INDEX[note.contextKpId] : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {kp && (
+        <div style={{
+          padding: '8px 12px', borderRadius: 999,
+          background: t.surface2, alignSelf: 'flex-start',
+          fontSize: 11, color: t.textSoft, fontWeight: 600,
+        }}>
+          {kp.module.icon} {kp.point.title}
+        </div>
+      )}
+      <div style={{ alignSelf: 'flex-end', maxWidth: '88%' }}>
+        <div style={{ fontSize: 10, color: t.textMute, fontWeight: 600, marginBottom: 3, textAlign: 'right' }}>我</div>
+        <div style={{
+          padding: '10px 13px', borderRadius: 14,
+          background: t.accent, color: '#fff',
+          fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap',
+          boxShadow: `2px 2px 5px ${t.sDark}, -1px -1px 3px ${t.sLight}`,
+        }}>{note.question}</div>
+      </div>
+      <div style={{ alignSelf: 'flex-start', maxWidth: '92%' }}>
+        <div style={{ fontSize: 10, color: t.textMute, fontWeight: 600, marginBottom: 3, paddingLeft: 4 }}>AI 私教</div>
+        <div style={{
+          padding: '10px 13px', borderRadius: 14,
+          background: t.surface2, color: t.text,
+          fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+          boxShadow: `1.5px 1.5px 3px ${t.sDark}, -1.5px -1.5px 3px ${t.sLight}`,
+        }}>{note.answer}</div>
+        {note.ragCitations && note.ragCitations.length > 0 && (
+          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {note.ragCitations.map(c => (
+              <div key={c.chunk_id || c.index} style={{
+                padding: '3px 8px', borderRadius: 999, background: t.surface,
+                fontSize: 10, color: t.textSoft, fontWeight: 600,
+              }}>[{c.index}] {c.doc_name || '来源'}</div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

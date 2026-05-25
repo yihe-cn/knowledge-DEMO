@@ -26,6 +26,15 @@ export async function postJSON({ endpoint, body, signal }) {
 }
 
 /**
+ * 练后评估报告（非流式）。后端 Graph 一次性返回完整报告 JSON。
+ * @param {Object} body  { customer, picks, kp_list, final_mood, viewed_kp, product_code }
+ * @param {AbortSignal} [signal]
+ */
+export function evaluatePractice(body, signal) {
+  return postJSON({ endpoint: '/api/practice/evaluate', body, signal });
+}
+
+/**
  * @param {Object} opts
  * @param {string} opts.endpoint  - 形如 '/api/qa'
  * @param {Object} opts.body
@@ -36,9 +45,12 @@ export async function postJSON({ endpoint, body, signal }) {
  * @param {(items:any[])=>void} [opts.onCitations]
  * @param {(items:any[])=>void} [opts.onTaggedKps]
  * @param {(data:any)=>void}    [opts.onFallback]
+ * @param {(items:string[])=>void} [opts.onFollowups] - 异步追问事件，在 result 之后到达
+ * @param {(data:{node:string,duration_ms:number,status:string})=>void} [opts.onStage] - 流水线节点完成事件，用于展示进度
+ * @param {(mode:string)=>void} [opts.onAnswerMode] - 后端选定回答模式 'kb' | 'experience'
  * @param {AbortSignal}         [opts.signal]
  */
-export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, onCitations, onTaggedKps, onFallback, signal }) {
+export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, onCitations, onTaggedKps, onFallback, onFollowups, onStage, onAnswerMode, signal }) {
   let resp;
   try {
     const headers = { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' };
@@ -91,6 +103,13 @@ export async function streamChat({ endpoint, body, onToken, onResult, onError, o
       onTaggedKps && onTaggedKps((data && data.items) || []);
     } else if (event === 'fallback') {
       onFallback && onFallback(data || {});
+    } else if (event === 'followups') {
+      onFollowups && onFollowups((data && data.items) || []);
+    } else if (event === 'stage') {
+      onStage && onStage(data || {});
+    } else if (event === 'answer_mode') {
+      const mode = (data && typeof data === 'object') ? data.mode : data;
+      if (mode) onAnswerMode && onAnswerMode(mode);
     } else if (event === 'error') {
       const msg = (data && data.message) || String(data) || 'unknown error';
       onError && onError(new Error(msg));

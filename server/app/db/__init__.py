@@ -8,11 +8,13 @@ from .models import (
     KpExtractionJob,
     Product,
     KpProductLink,
+    PracticeRole,
     DocStatus,
     KpStatus,
     LinkSource,
     ProductStatus,
     ProductLinkSource,
+    PracticeRoleSource,
 )
 
 __all__ = [
@@ -29,9 +31,11 @@ __all__ = [
     "KpExtractionJob",
     "Product",
     "KpProductLink",
+    "PracticeRole",
     "DocStatus",
     "KpStatus",
     "LinkSource",
     "ProductStatus",
     "ProductLinkSource",
+    "PracticeRoleSource",
 ]

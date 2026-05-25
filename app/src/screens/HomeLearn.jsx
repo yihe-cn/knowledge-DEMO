@@ -2,14 +2,27 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
+import { PRODUCTS, REMOTE_PRODUCT_IDS } from "../productCatalog.js";
 
 // ═══ HOME ═════════════════════════════════════════════════════════
-function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
+function HomeScreen({ t, state, go, account, product, onBackToAccounts, switchProduct }) {
   const learnTotal = product.meta.knowledgeTotal;
   const learnDone = state.learnedPoints.size;
   const learnPct = learnTotal > 0 ? learnDone / learnTotal : 0;
   const practiced = state.practiced;
   const reportReady = state.reportReady;
+
+  // S4：下一步推荐——按闭环顺序找第一个未完成的环节作为高亮卡。
+  // 全部完成时返回 null，三张卡都正常 done 态。
+  const nextKind = !practiced && learnPct < 1 ? 'learn'
+    : !practiced && learnPct >= 1 ? 'practice'
+    : practiced && !reportReady ? 'report'
+    : null;
+  const nextCta = {
+    learn: learnDone > 0 ? '继续学习 →' : '开始学习 →',
+    practice: '开始实战演练 →',
+    report: '查看本次评估 →',
+  };
 
   return (
     <div style={{ padding: '4px 18px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -33,6 +46,11 @@ function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
         </div>
         <div style={{ fontSize: 26, fontWeight: 700, color: t.text, marginTop: 6, letterSpacing: '-0.01em' }}>早上好，{account.name}</div>
         <div style={{ fontSize: 14, color: t.textSoft, marginTop: 6 }}>今日训练任务：{product.meta.name} 产品力 · 第 3 天</div>
+        {switchProduct && (
+          <div style={{ marginTop: 10 }}>
+            <CourseSwitcher t={t} account={account} product={product} switchProduct={switchProduct} />
+          </div>
+        )}
       </div>
 
       {/* Closed-loop journey card */}
@@ -58,6 +76,8 @@ function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
         progress={learnPct}
         status={learnPct >= 1 ? 'done' : 'active'}
         icon="book"
+        isNext={nextKind === 'learn'}
+        nextCta={nextCta.learn}
         onClick={() => go('learn')}
       />
 
@@ -71,6 +91,8 @@ function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
         status={learnPct < 1 ? 'locked' : practiced ? 'done' : 'active'}
         icon="chat"
         lockHint={learnPct < 1 ? '完成全部知识点后解锁' : null}
+        isNext={nextKind === 'practice'}
+        nextCta={nextCta.practice}
         onClick={() => learnPct >= 1 && go('practice')}
       />
 
@@ -84,8 +106,108 @@ function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
         status={!practiced ? 'locked' : reportReady ? 'done' : 'active'}
         icon="chart"
         lockHint={!practiced ? '完成演练后生成' : null}
+        isNext={nextKind === 'report'}
+        nextCta={nextCta.report}
         onClick={() => reportReady && go('report')}
       />
+    </div>
+  );
+}
+
+// 课程切换器（S2）：演示中途切产品不必返回 accounts 页。
+// 列出 当前账号静态可见产品 ∪ 远端动态产品，已加载/未加载都允许进入——
+// 未加载的会走 switchProduct 内的 ensureProductLoaded 异步加载。
+function CourseSwitcher({ t, account, product, switchProduct }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function onDoc(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  // 每次渲染都重算——REMOTE_PRODUCT_IDS 是模块级 Set，loadRemoteProducts
+  // 异步填充后没有 reactive 信号；ids 列表很短，无须 memo。
+  const ids = [...(account.productIds || [])];
+  REMOTE_PRODUCT_IDS.forEach(id => { if (!ids.includes(id)) ids.push(id); });
+  const visibleIds = ids;
+
+  if (visibleIds.length <= 1) return null;
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          ...neuFlat(t, 999), padding: '6px 12px 6px 8px',
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ fontSize: 14 }}>{product.meta.industryIcon}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: t.text }}>{product.meta.name}</span>
+        <span style={{
+          transform: `rotate(${open ? 180 : 0}deg)`,
+          transition: 'transform .2s',
+          color: t.textMute,
+          fontSize: 11, lineHeight: 1,
+        }}>▾</span>
+      </div>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+          ...neuRaised(t, 14, 1.2),
+          padding: 6,
+          zIndex: 50,
+          minWidth: 240,
+        }}>
+          <div style={{
+            padding: '8px 12px 6px', fontSize: 10, color: t.textMute,
+            fontWeight: 700, letterSpacing: '0.12em',
+          }}>切换课程</div>
+          {visibleIds.map(pid => {
+            const p = PRODUCTS[pid];
+            if (!p) return null;
+            const active = pid === product.id;
+            return (
+              <div
+                key={pid}
+                onClick={() => {
+                  setOpen(false);
+                  if (!active) switchProduct(pid);
+                }}
+                style={{
+                  padding: '10px 12px',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  background: active ? `${t.accent}14` : 'transparent',
+                  transition: 'background .15s',
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = t.surface2; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <div style={{
+                  width: 28, height: 28, borderRadius: 9, flexShrink: 0,
+                  background: t.surface2,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15,
+                  boxShadow: `1.5px 1.5px 3px ${t.sDark}, -1.5px -1.5px 3px ${t.sLight}`,
+                }}>{p.meta.industryIcon}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>{p.meta.name}</div>
+                  <div style={{ fontSize: 10.5, color: t.textMute, marginTop: 1 }}>{p.meta.industry}</div>
+                </div>
+                {active && <Icon name="check" size={14} color={t.accent} stroke={2.4} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -132,11 +254,17 @@ function JourneyTrack({ t, learnPct, practiced, reportReady }) {
   );
 }
 
-function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, onClick }) {
+function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, isNext, nextCta, onClick }) {
   const locked = status === 'locked';
   const done = status === 'done';
   return (
-    <Card t={t} onClick={locked ? undefined : onClick} style={{ padding: 18, opacity: locked ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 16 }}>
+    <Card t={t} onClick={locked ? undefined : onClick} style={{
+      padding: 18, opacity: locked ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 16,
+      // S4：当前推荐项加 accent ring + 微微发光，无障碍提示"现在做这个"
+      ...(isNext ? {
+        boxShadow: `4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, 0 0 0 2px ${t.accent} inset, 0 0 0 5px ${t.accent}1a`,
+      } : {}),
+    }}>
       <div style={{
         width: 56, height: 56, borderRadius: 18, flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -150,8 +278,20 @@ function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, on
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ fontSize: 17, fontWeight: 700, color: t.text }}>{title}</div>
           {done && <div style={{ fontSize: 11, color: t.good, fontWeight: 600 }}>● 已完成</div>}
+          {isNext && (
+            <div style={{
+              fontSize: 10, color: '#fff', fontWeight: 700, letterSpacing: '0.08em',
+              padding: '2px 7px', borderRadius: 999,
+              background: t.accent,
+              boxShadow: `1px 1px 2px ${t.sDark}`,
+            }}>NEXT</div>
+          )}
         </div>
-        <div style={{ fontSize: 13, color: t.textSoft, marginTop: 4 }}>{lockHint || sub}</div>
+        <div style={{
+          fontSize: 13, marginTop: 4,
+          color: isNext ? t.accent : t.textSoft,
+          fontWeight: isNext ? 700 : 400,
+        }}>{lockHint || (isNext && nextCta ? nextCta : sub)}</div>
         {!locked && (
           <div style={{ marginTop: 10, height: 5, ...neuInset(t, 999, 0.4), position: 'relative', overflow: 'hidden' }}>
             <div style={{
@@ -162,7 +302,7 @@ function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, on
           </div>
         )}
       </div>
-      {!locked && <Icon name="arrow" size={18} color={t.textMute} />}
+      {!locked && <Icon name="arrow" size={18} color={isNext ? t.accent : t.textMute} stroke={isNext ? 2.2 : 1.6} />}
     </Card>
   );
 }

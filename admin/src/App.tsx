@@ -7,6 +7,7 @@ import KpReview from './pages/KpReview';
 import KpRegistry from './pages/KpRegistry';
 import KpDetail from './pages/KpDetail';
 import Products from './pages/Products';
+import HrApp from './hr/HrApp';
 import { setInternalToken } from './api/client';
 import { ActiveProductProvider, useActiveProduct } from './context/ActiveProduct';
 
@@ -18,6 +19,7 @@ const items = [
   { key: '/kb', label: <Link to="/kb">KB 文档</Link> },
   { key: '/kp/review', label: <Link to="/kp/review">KP 审核</Link> },
   { key: '/kp', label: <Link to="/kp">KP 全量</Link> },
+  { key: '/hr', label: <Link to="/hr">HR 知识中台</Link> },
 ];
 
 function ProductSwitcher() {
@@ -97,7 +99,10 @@ function Shell() {
 export default function App() {
   return (
     <ActiveProductProvider>
-      <Shell />
+      <Routes>
+        <Route path="/hr/*" element={<HrApp />} />
+        <Route path="*" element={<Shell />} />
+      </Routes>
     </ActiveProductProvider>
   );
 }

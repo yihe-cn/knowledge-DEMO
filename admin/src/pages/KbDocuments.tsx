@@ -182,7 +182,7 @@ function UploadModal({
           }}
           fileList={file ? [{ uid: '1', name: file.name, status: 'done' } as any] : []}
           onRemove={() => setFile(null)}
-          accept=".pdf,.pptx,.ppt,.md,.txt"
+          accept=".pdf,.pptx,.md,.txt"
           maxCount={1}
         >
           <Button icon={<UploadOutlined />}>选择文件</Button>

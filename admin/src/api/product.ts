@@ -8,6 +8,8 @@ export type Product = {
   student_role: string;
   customer_label: string;
   description: string;
+  features_brief: string;
+  allow_experience_answer: boolean;
   status: string;
   kp_count: number;
   doc_count: number;
