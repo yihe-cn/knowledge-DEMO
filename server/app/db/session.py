@@ -9,11 +9,19 @@ from sqlalchemy.orm import sessionmaker
 from ..config import settings
 
 
-engine = create_async_engine(settings.mysql_dsn, pool_pre_ping=True, pool_recycle=3600)
+_is_sqlite = settings.mysql_dsn.startswith("sqlite")
+
+_async_kwargs: dict = {"pool_pre_ping": True}
+_sync_kwargs: dict = {"pool_pre_ping": True}
+if not _is_sqlite:
+    _async_kwargs["pool_recycle"] = 3600
+    _sync_kwargs["pool_recycle"] = 3600
+
+engine = create_async_engine(settings.mysql_dsn, **_async_kwargs)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-# 同步引擎给 Celery worker 使用
-sync_engine = create_engine(settings.mysql_dsn_sync, pool_pre_ping=True, pool_recycle=3600)
+# 同步引擎给 Celery worker / 启动期 schema 初始化使用
+sync_engine = create_engine(settings.mysql_dsn_sync, **_sync_kwargs)
 SyncSessionLocal = sessionmaker(sync_engine, expire_on_commit=False)
 
 

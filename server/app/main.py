@@ -1,5 +1,9 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .routes import (
@@ -16,6 +20,27 @@ from .routes import (
 )
 
 app = FastAPI(title="SIMUGO Server", version="0.1.0")
+
+
+@app.on_event("startup")
+def _init_demo_schema() -> None:
+    """Demo 模式（SQLite）下，启动时自动建表 + 准备 /data 目录。
+
+    生产 MySQL 部署不会跑到这里，因为 SQLite 检测条件不成立。
+    """
+    if not settings.mysql_dsn_sync.startswith("sqlite"):
+        return
+    # 解析 sqlite:////data/app.db → /data/app.db；如果是相对路径就跳过创建目录
+    db_path = settings.mysql_dsn_sync.split("sqlite:///", 1)[-1]
+    if db_path.startswith("/"):
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.milvus_db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    from .db import Base
+    from .db.session import sync_engine
+
+    Base.metadata.create_all(sync_engine)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,9 +84,8 @@ async def healthz_rag():
 
     # Milvus
     try:
-        from .vector_store import get_collection
-        coll = get_collection()
-        result["milvus"] = f"ok ({coll.num_entities} entities)"
+        from .vector_store import num_entities
+        result["milvus"] = f"ok ({num_entities()} entities)"
     except Exception as e:
         result["milvus"] = f"err: {e}"
 
@@ -91,3 +115,40 @@ app.include_router(course.router, prefix="/api")
 app.include_router(practice.router, prefix="/api")
 app.include_router(practice.suggest_router, prefix="/api")
 app.include_router(quiz.router, prefix="/api")
+
+# 前端静态资源：必须在所有 API 路由注册完毕之后挂，否则 / 会吞掉 /api/*。
+# FRONTEND_DIST / ADMIN_DIST 在镜像里固定为 /app/frontend、/app/admin。
+# 学员端挂在 /；管理后台挂在 /admin/（子路径，与 admin/vite.config.ts 的 base 一致）。
+_frontend_dist = os.environ.get("FRONTEND_DIST", "/app/frontend")
+_admin_dist = os.environ.get("ADMIN_DIST", "/app/admin")
+
+if os.path.isdir(_frontend_dist):
+    from fastapi.responses import FileResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    from fastapi.exception_handlers import http_exception_handler
+
+    _index_html = Path(_frontend_dist) / "index.html"
+    _admin_index_html = Path(_admin_dist) / "index.html"
+    _has_admin = _admin_index_html.is_file()
+
+    _spa_skip_prefixes = ("/api", "/healthz", "/openapi", "/docs", "/redoc")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _spa_fallback(request, exc: StarletteHTTPException):
+        """SPA fallback：
+        - 以 /admin/ 开头的未知路径 → admin index.html（React Router 处理）
+        - 其他非 API/docs 路径 → 学员端 index.html
+        - API / 文档路径 → 正常 404
+        """
+        if exc.status_code == 404:
+            path = request.url.path
+            if _has_admin and (path == "/admin" or path.startswith("/admin/")):
+                return FileResponse(_admin_index_html)
+            if not path.startswith(_spa_skip_prefixes) and _index_html.is_file():
+                return FileResponse(_index_html)
+        return await http_exception_handler(request, exc)
+
+    # admin 必须在 frontend 之前 mount，否则 /admin/ 会被根 StaticFiles 拦截
+    if _has_admin:
+        app.mount("/admin", StaticFiles(directory=_admin_dist, html=True), name="admin")
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")

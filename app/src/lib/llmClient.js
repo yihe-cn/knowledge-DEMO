@@ -2,8 +2,10 @@
 // 后端约定的事件类型：token / result / error / done。
 // 不用 EventSource 是因为它不支持 POST body。
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || '';
+// 空字符串 = 同源相对路径（前端由 FastAPI 同进程托管时使用）。
+// 用 ?? 而不是 ||，否则显式设置成 "" 时会被兜底吞掉。
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN ?? '';
 
 /**
  * 非流式 JSON POST。

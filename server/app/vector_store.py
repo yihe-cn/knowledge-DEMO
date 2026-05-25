@@ -1,114 +1,141 @@
-"""Milvus 集合封装。仅用于 `kb_chunks` 一个集合。
+"""Milvus Lite 集合封装。仅用于 `kb_chunks` 一个集合。
 
 字段：
-- chunk_id (INT64, primary)：与 MySQL kb_chunk.id 一一对应
+- chunk_id (INT64, primary)：与 SQL kb_chunk.id 一一对应
 - doc_id (INT64)
 - kp_ids (ARRAY<INT64>)：先空，KP 抽取/审批后回写
 - vector (FLOAT_VECTOR, dim=settings.milvus_dim)
+
+注意（Demo 用 Milvus Lite）：
+- 索引类型只用 FLAT（Lite 不支持 HNSW）。几万条规模 FLAT 暴搜性能/召回都够。
+- 通过 `MilvusClient(uri=settings.milvus_db_path)` 直接打开本地 .db 文件，
+  不需要 etcd / MinIO / 独立 Milvus 服务。
 """
 from __future__ import annotations
 
 from functools import lru_cache
 from typing import Iterable
 
-from pymilvus import (
-    Collection,
-    CollectionSchema,
-    DataType,
-    FieldSchema,
-    connections,
-    utility,
-)
+from pymilvus import DataType, MilvusClient
 
 from .config import settings
 
 
-_CONN_ALIAS = "default"
-
-
-def _ensure_connection() -> None:
-    if connections.has_connection(_CONN_ALIAS):
-        return
-    connections.connect(alias=_CONN_ALIAS, uri=settings.milvus_uri)
-
-
-def _build_schema() -> CollectionSchema:
-    return CollectionSchema(
-        fields=[
-            FieldSchema(name="chunk_id", dtype=DataType.INT64, is_primary=True, auto_id=False),
-            FieldSchema(name="doc_id", dtype=DataType.INT64),
-            FieldSchema(
-                name="kp_ids",
-                dtype=DataType.ARRAY,
-                element_type=DataType.INT64,
-                max_capacity=32,
-            ),
-            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=settings.milvus_dim),
-        ],
-        description="SIMUGO KB chunk embeddings",
-        enable_dynamic_field=False,
-    )
-
-
 @lru_cache(maxsize=1)
-def get_collection() -> Collection:
-    _ensure_connection()
+def _client() -> MilvusClient:
+    return MilvusClient(uri=settings.milvus_db_path)
+
+
+# Collection load 状态用进程级标记记忆，避免每次请求都触发 load_collection RPC
+_loaded: set[str] = set()
+
+
+def _ensure_collection(client: MilvusClient) -> None:
     name = settings.milvus_collection
-    if not utility.has_collection(name):
-        coll = Collection(name=name, schema=_build_schema())
-        coll.create_index(
-            field_name="vector",
-            index_params={
-                "index_type": "HNSW",
-                "metric_type": "COSINE",
-                "params": {"M": 16, "efConstruction": 200},
-            },
+    if not client.has_collection(name):
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("chunk_id", DataType.INT64, is_primary=True)
+        schema.add_field("doc_id", DataType.INT64)
+        schema.add_field(
+            "kp_ids", DataType.ARRAY, element_type=DataType.INT64, max_capacity=32
         )
-    else:
-        coll = Collection(name=name)
-    coll.load()
-    return coll
+        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=settings.milvus_dim)
+
+        index_params = client.prepare_index_params()
+        index_params.add_index(
+            field_name="vector", index_type="FLAT", metric_type="COSINE"
+        )
+
+        client.create_collection(
+            collection_name=name, schema=schema, index_params=index_params
+        )
+
+    # Milvus Lite 从 seed 文件加载进来时集合默认 "released"，必须 load 才能 search/query。
+    # load_collection 是幂等的，重复调用是 no-op。
+    if name not in _loaded:
+        client.load_collection(name)
+        _loaded.add(name)
+
+
+def _reload_collection() -> None:
+    """search/query 报 'released' 时强制重新 load 一次。"""
+    _loaded.discard(settings.milvus_collection)
+    _ensure_collection(_client())
+
+
+def get_collection_name() -> str:
+    client = _client()
+    _ensure_collection(client)
+    return settings.milvus_collection
+
+
+def num_entities() -> int:
+    """供 /healthz 用，不存在则当 0。"""
+    client = _client()
+    if not client.has_collection(settings.milvus_collection):
+        return 0
+    stats = client.get_collection_stats(settings.milvus_collection)
+    return int(stats.get("row_count", 0))
 
 
 def upsert_chunks(rows: Iterable[dict]) -> None:
     """rows: [{chunk_id, doc_id, kp_ids, vector}]"""
-    items = list(rows)
+    items = [
+        {
+            "chunk_id": int(r["chunk_id"]),
+            "doc_id": int(r["doc_id"]),
+            "kp_ids": list(r.get("kp_ids") or []),
+            "vector": r["vector"],
+        }
+        for r in rows
+    ]
     if not items:
         return
-    coll = get_collection()
-    coll.upsert(
-        [
-            [r["chunk_id"] for r in items],
-            [r["doc_id"] for r in items],
-            [r.get("kp_ids") or [] for r in items],
-            [r["vector"] for r in items],
-        ]
-    )
-    coll.flush()
+    client = _client()
+    _ensure_collection(client)
+    client.upsert(collection_name=settings.milvus_collection, data=items)
 
 
-_DOC_IDS_BATCH = 200  # 单次 Milvus expr 里塞的 doc_id 上限；超过分批 search + score merge
+_DOC_IDS_BATCH = 200  # 单次 expr 里塞的 doc_id 上限；超过分批 search + score merge
 
 
 def _search_one(
-    coll, query_vector: list[float], top_k: int, expr: str | None
+    client: MilvusClient, query_vector: list[float], top_k: int, expr: str | None
 ) -> list[dict]:
-    res = coll.search(
-        data=[query_vector],
-        anns_field="vector",
-        param={"metric_type": "COSINE", "params": {"ef": 64}},
-        limit=top_k,
-        expr=expr,
-        output_fields=["doc_id", "kp_ids"],
-    )
+    def _do():
+        return client.search(
+            collection_name=settings.milvus_collection,
+            data=[query_vector],
+            anns_field="vector",
+            search_params={"metric_type": "COSINE", "params": {}},
+            limit=top_k,
+            filter=expr or "",
+            # pymilvus 3.x: 主键字段需显式 output_fields 才能在 hit 里读到
+            output_fields=["chunk_id", "doc_id", "kp_ids"],
+        )
+
+    try:
+        res = _do()
+    except Exception as e:
+        # collection released → 自愈：重新 load 一次再试
+        if "released" in str(e).lower():
+            _reload_collection()
+            res = _do()
+        else:
+            raise
+
     out = []
     for hit in res[0]:
+        # pymilvus 3.x + Milvus Lite：COSINE metric 下 hit.distance = cosine 距离
+        # （0=最相似），而下游代码假设 score 越大越相关，所以这里翻成相似度。
+        # 注意：这与早期 Milvus standalone（distance 直接是相似度）不同。
+        dist = float(hit.distance)
         out.append(
             {
-                "chunk_id": int(hit.id),
-                "score": float(hit.distance),
-                "doc_id": int(hit.entity.get("doc_id")),
-                "kp_ids": list(hit.entity.get("kp_ids") or []),
+                "chunk_id": int(hit["chunk_id"]),
+                "score": 1.0 - dist,
+                "doc_id": int(hit["doc_id"]) if hit.get("doc_id") is not None else 0,
+                "kp_ids": list(hit.get("kp_ids") or []),
             }
         )
     return out
@@ -120,10 +147,10 @@ def search(
     kp_id: int | None = None,
     doc_ids: list[int] | None = None,
 ) -> list[dict]:
-    coll = get_collection()
+    client = _client()
+    _ensure_collection(client)
     kp_clause = f"array_contains(kp_ids, {int(kp_id)})" if kp_id is not None else None
 
-    # 没有 doc_ids 过滤或 doc_ids 小，单次搞定
     if not doc_ids or len(doc_ids) <= _DOC_IDS_BATCH:
         parts = []
         if kp_clause:
@@ -131,9 +158,8 @@ def search(
         if doc_ids:
             ids = ",".join(str(int(d)) for d in doc_ids)
             parts.append(f"doc_id in [{ids}]")
-        return _search_one(coll, query_vector, top_k, " and ".join(parts) if parts else None)
+        return _search_one(client, query_vector, top_k, " and ".join(parts) if parts else None)
 
-    # doc_ids 过多：分批检索 + 按 score 合并 + 去重 + 截 top_k
     merged: dict[int, dict] = {}
     for i in range(0, len(doc_ids), _DOC_IDS_BATCH):
         batch = doc_ids[i : i + _DOC_IDS_BATCH]
@@ -142,9 +168,8 @@ def search(
         if kp_clause:
             parts.append(kp_clause)
         parts.append(f"doc_id in [{ids}]")
-        for h in _search_one(coll, query_vector, top_k, " and ".join(parts)):
+        for h in _search_one(client, query_vector, top_k, " and ".join(parts)):
             cid = h["chunk_id"]
-            # 同一 chunk_id 多批不可能命中（doc_id 是分批互斥）；保险起见取较高 score
             if cid not in merged or merged[cid]["score"] < h["score"]:
                 merged[cid] = h
     return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
@@ -153,44 +178,48 @@ def search(
 def delete_by_chunk_ids(chunk_ids: list[int]) -> None:
     if not chunk_ids:
         return
-    coll = get_collection()
-    ids_expr = ",".join(str(int(c)) for c in chunk_ids)
-    coll.delete(expr=f"chunk_id in [{ids_expr}]")
-    coll.flush()
+    client = _client()
+    _ensure_collection(client)
+    client.delete(
+        collection_name=settings.milvus_collection,
+        filter=f"chunk_id in [{','.join(str(int(c)) for c in chunk_ids)}]",
+    )
 
 
 def delete_by_doc(doc_id: int) -> None:
-    coll = get_collection()
-    coll.delete(expr=f"doc_id == {int(doc_id)}")
-    coll.flush()
+    client = _client()
+    _ensure_collection(client)
+    client.delete(
+        collection_name=settings.milvus_collection,
+        filter=f"doc_id == {int(doc_id)}",
+    )
 
 
 class MilvusChunkMissing(LookupError):
-    """update_kp_ids 时 Milvus 查不到对应 chunk —— 不能静默成功，调用方必须当失败处理。"""
+    """update_kp_ids 时查不到对应 chunk —— 不能静默成功，调用方必须当失败处理。"""
 
 
 def update_kp_ids(chunk_id: int, kp_ids: list[int]) -> None:
-    """KP 审批后回写。Milvus 不支持单字段 update，用 upsert 同 id 整行覆盖前需先读 vector。
-    为简单起见这里走 query+upsert 模式（MVP 量级可接受）。
-
-    若 Milvus 里没有该 chunk_id（MySQL 与向量库不同步、向量被人工删过、入库时漏写），
-    抛 MilvusChunkMissing；调用方应把这条 chunk 计入失败列表并提示 reconcile。
-    """
-    coll = get_collection()
-    rows = coll.query(
-        expr=f"chunk_id == {int(chunk_id)}",
+    """KP 审批后回写。Milvus 不支持单字段 update，用 upsert 同 id 整行覆盖前需先读 vector。"""
+    client = _client()
+    _ensure_collection(client)
+    rows = client.query(
+        collection_name=settings.milvus_collection,
+        filter=f"chunk_id == {int(chunk_id)}",
         output_fields=["chunk_id", "doc_id", "vector"],
         limit=1,
     )
     if not rows:
         raise MilvusChunkMissing(f"chunk_id={chunk_id} 在 Milvus 中不存在")
     r = rows[0]
-    coll.upsert(
-        [
-            [int(r["chunk_id"])],
-            [int(r["doc_id"])],
-            [kp_ids],
-            [r["vector"]],
-        ]
+    client.upsert(
+        collection_name=settings.milvus_collection,
+        data=[
+            {
+                "chunk_id": int(r["chunk_id"]),
+                "doc_id": int(r["doc_id"]),
+                "kp_ids": list(kp_ids),
+                "vector": r["vector"],
+            }
+        ],
     )
-    coll.flush()

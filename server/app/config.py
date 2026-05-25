@@ -23,10 +23,13 @@ class Settings(BaseSettings):
     allow_origins: str = "http://localhost:5173"
 
     # ── RAG 栈 ─────────────────────────────────────────────
-    mysql_dsn: str = "mysql+aiomysql://simugo:simugo@127.0.0.1:3306/simugo_kb"
-    mysql_dsn_sync: str = "mysql+pymysql://simugo:simugo@127.0.0.1:3306/simugo_kb"
+    # Demo 默认走 SQLite + Milvus Lite，全部落在 /data 下，单容器即可启动。
+    # 通过环境变量 MYSQL_DSN / MYSQL_DSN_SYNC 可切回外部 MySQL。
+    mysql_dsn: str = "sqlite+aiosqlite:////data/app.db"
+    mysql_dsn_sync: str = "sqlite:////data/app.db"
     redis_url: str = "redis://127.0.0.1:6379/0"
-    milvus_uri: str = "http://127.0.0.1:19530"
+    # Milvus Lite 本地 .db 文件路径（嵌入式，无独立 Milvus 服务）
+    milvus_db_path: str = "/data/milvus.db"
     milvus_collection: str = "kb_chunks"
     milvus_dim: int = 1024
 

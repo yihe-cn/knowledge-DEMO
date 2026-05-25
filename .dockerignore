@@ -1,0 +1,21 @@
+**/.DS_Store
+**/node_modules
+**/__pycache__
+**/.venv
+**/.env
+**/.env.*
+# 但前端构建必须的 .env.production 要放行
+!app/.env.production
+**/dist
+**/build
+**/*.pyc
+.git
+.claude
+.idea
+.vscode
+Knowledge
+demo
+server/uploads
+server/.venv
+server/uv.lock
+app/dist
