@@ -2,17 +2,17 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
+import { streamChat } from "../lib/llmClient.js";
 
 const QUIZ_COUNT = 5;
 
-// ─── 出题 prompt ──────────────────────────────────────────────
-function buildQuestionPrompt(KNOWLEDGE, customer, contextKp, count) {
-  // 只用学员可能学过的 KP（context 优先 → 全量）
+// ─── 把知识范围压缩成发给后端的结构 ─────────────────────────
+function buildQuizKnowledgeScope(KNOWLEDGE, contextKp) {
   const scope = contextKp ? [{
     id: contextKp.module.id, title: contextKp.module.title,
     points: [contextKp.point],
   }] : KNOWLEDGE;
-  const compact = scope.map(m => ({
+  return scope.map(m => ({
     id: m.id, title: m.title,
     points: m.points.map(p => ({
       id: p.id, title: p.title,
@@ -20,59 +20,6 @@ function buildQuestionPrompt(KNOWLEDGE, customer, contextKp, count) {
       rebuttalSeeds: (p.rebuttals || []).map(r => r.q),
     })),
   }));
-  return `你是销售训练教练。请基于知识库和客户人设，生成 ${count} 个客户会真的问出口的提问，用来突击考员工。
-
-【客户人设】
-${customer.name}，${customer.age}岁，${customer.job}，${customer.tagline}。
-背景：${customer.context}。
-个性：${(customer.personality || []).join('、')}。
-关心的问题：${(customer.concerns || []).map(c => c.tag).join('、')}。
-
-【题型要求】
-- 覆盖至少 3 种类型：参数类（问数据）、异议类（带顾虑/质疑）、对比类（提竞品）、应用类（问怎么用）
-- 每题来自不同 KP，不要扎堆
-- 必须完全贴合人设口吝：${customer.name}怎么说话，题干就怎么写。不是面试题。
-- 一句话，不超过 35 字
-
-【知识范围】
-${JSON.stringify(compact)}
-
-【输出 —— 严格 JSON】
-{
-  "questions": [
-    {"id": "q1", "text": "客户问题文本", "type": "参数|异议|对比|应用", "primaryKpId": "kpX-Y", "tone": "neutral|concern|challenge|interested"}
-  ]
-}`;
-}
-
-// ─── 评分 prompt ──────────────────────────────────────────────
-function buildGradePrompt(question, kp, studentAnswer) {
-  return `你是销售训练教练。学员正在做"客户突击"训练，请评估这个回答。
-
-【客户问题】"${question.text}"（${question.type}类）
-
-【关联知识点 · ${kp.point.title}】
-参数事实：${kp.point.spec}
-销售应用思路：${kp.point.sales}
-${kp.point.customerVoice ? `客户视角金句：${kp.point.customerVoice}` : ''}
-${(kp.point.rebuttals || []).map(r => `参考异议处理：${r.q} → ${r.approach}`).join('\n')}
-
-【学员答案】"${studentAnswer}"
-
-【评估维度】
-- 有没有抓到核心信息点
-- 有没有具体数据/场景化（而不是空话）
-- 有没有共情客户真实顾虑
-- 有没有套话/贬低竞品
-
-【输出 —— 严格 JSON】
-{
-  "rating": "good" | "mid" | "bad",
-  "comment": "1-2 句话评语，针对学员实际答的内容，不要套话",
-  "missing": "可选：缺什么 或 加分项",
-  "referenceAnswer": "标杆答案（参考 SCRIPT 里 quality:good 的话术风格，40-100 字，可以换行）",
-  "citations": ["相关 kp id 数组"]
-}`;
 }
 
 // ─── 标杆答案 fallback：如果模型挂了，用 SCRIPT 里现成的好答案兜底
@@ -107,26 +54,26 @@ function QuizMode({ t, contextKp, setContextKpId }) {
   // ─── 启动：生成 5 题 ──
   const startQuiz = useCallback(async () => {
     setPhase('generating');
-    try {
-      const prompt = buildQuestionPrompt(KNOWLEDGE, customer, contextKp, QUIZ_COUNT);
-      const raw = await window.claude.complete({
-        system: prompt,
-        messages: [{ role: 'user', content: `请基于 ${customer.name} 的人设和顾虑，生成 ${QUIZ_COUNT} 个突击题。` }],
-      });
-      const parsed = parseJSON(raw);
-      let qs = (parsed && parsed.questions) || [];
-      qs = qs.filter(q => q.text && KP_INDEX[q.primaryKpId]).slice(0, QUIZ_COUNT);
-      if (qs.length === 0) throw new Error('no questions');
-      setQuestions(qs);
-      setIdx(0);
-      setPhase('quiz');
-    } catch (e) {
-      // 兜底：从 KNOWLEDGE rebuttals 里抓
-      const fb = collectFallbackQuestions(KNOWLEDGE, contextKp, QUIZ_COUNT);
-      setQuestions(fb);
-      setIdx(0);
-      setPhase('quiz');
+    let result = null;
+    let errored = false;
+    await streamChat({
+      endpoint: '/api/quiz/generate',
+      body: {
+        customer,
+        knowledge: buildQuizKnowledgeScope(KNOWLEDGE, contextKp),
+        count: QUIZ_COUNT,
+      },
+      onResult: (data) => { result = data; },
+      onError: () => { errored = true; },
+    });
+    let qs = (result && result.questions) || [];
+    qs = qs.filter(q => q && q.text && KP_INDEX[q.primaryKpId]).slice(0, QUIZ_COUNT);
+    if (errored || qs.length === 0) {
+      qs = collectFallbackQuestions(KNOWLEDGE, contextKp, QUIZ_COUNT);
     }
+    setQuestions(qs);
+    setIdx(0);
+    setPhase('quiz');
   }, [KNOWLEDGE, customer, KP_INDEX, contextKp]);
 
   // ─── 提交回答 ──
@@ -137,31 +84,53 @@ function QuizMode({ t, contextKp, setContextKpId }) {
     const kp = KP_INDEX[q.primaryKpId];
     setGrading(true);
     setStudentInput('');
-    try {
-      const prompt = buildGradePrompt(q, kp, text);
-      const raw = await window.claude.complete({
-        system: prompt,
-        messages: [{ role: 'user', content: '请评分。' }],
-      });
-      const grade = parseJSON(raw) || {};
-      const safe = {
-        rating: ['good', 'mid', 'bad'].includes(grade.rating) ? grade.rating : 'mid',
-        comment: grade.comment || '',
-        missing: grade.missing || '',
-        referenceAnswer: grade.referenceAnswer || fallbackReference(q.primaryKpId, KNOWLEDGE),
-        citations: (grade.citations || []).filter(id => KP_INDEX[id]),
-        studentAnswer: text,
-      };
-      setCurrentGrade(safe);
-    } catch (e) {
+
+    // 立即先放一个空 grade 占位，token 流入后实时更新 comment
+    let streamed = '';
+    let result = null;
+    let errored = false;
+    setCurrentGrade({
+      rating: 'mid', comment: '', missing: '', referenceAnswer: '',
+      citations: [], studentAnswer: text, streaming: true,
+    });
+    // 不在此处释放 grading —— grading 同时是"再次提交"的同步守卫，必须等流式结束。
+    // CoachThinking 的渲染条件改为 `grading && !currentGrade`，避免与占位气泡重叠。
+
+    await streamChat({
+      endpoint: '/api/quiz/grade',
+      body: { question: q, kp, student_answer: text },
+      onToken: (chunk) => {
+        streamed += chunk;
+        setCurrentGrade(g => g && g.streaming
+          ? { ...g, comment: streamed }
+          : g);
+      },
+      onResult: (data) => { result = data; },
+      onError: () => { errored = true; },
+    });
+
+    if (errored && !result) {
       setCurrentGrade({
-        rating: 'mid', comment: '网络不太顺，没能拿到 AI 教练的反馈。',
+        rating: 'mid',
+        comment: streamed || '网络不太顺，没能拿到 AI 教练的反馈。',
+        missing: '',
         referenceAnswer: fallbackReference(q.primaryKpId, KNOWLEDGE),
         citations: [q.primaryKpId], studentAnswer: text,
       });
-    } finally {
       setGrading(false);
+      return;
     }
+
+    const safe = {
+      rating: ['good', 'mid', 'bad'].includes(result?.rating) ? result.rating : 'mid',
+      comment: (result?.comment || streamed || '').trim(),
+      missing: result?.missing || '',
+      referenceAnswer: result?.referenceAnswer || fallbackReference(q.primaryKpId, KNOWLEDGE),
+      citations: ((result?.citations) || []).filter(id => KP_INDEX[id]),
+      studentAnswer: text,
+    };
+    setCurrentGrade(safe);
+    setGrading(false);
   }, [questions, idx, grading, KP_INDEX, KNOWLEDGE]);
 
   // ─── 下一题 / 收尾 ──
@@ -251,8 +220,8 @@ function QuizMode({ t, contextKp, setContextKpId }) {
           <StudentAnswerBubble t={t} text={currentGrade.studentAnswer} />
         )}
 
-        {/* Grading or grade */}
-        {grading && <CoachThinking t={t} />}
+        {/* Grading or grade —— 占位 grade 出现前用 CoachThinking 顶一下 */}
+        {grading && !currentGrade && <CoachThinking t={t} />}
         {currentGrade && (
           <CoachGradeBubble
             t={t} grade={currentGrade} kp={kp}
@@ -264,7 +233,7 @@ function QuizMode({ t, contextKp, setContextKpId }) {
       {/* Footer: input OR continue button */}
       <QuizFooter
         t={t}
-        graded={!!currentGrade}
+        graded={!!currentGrade && !currentGrade.streaming}
         grading={grading}
         showOptions={showOptions}
         question={q}

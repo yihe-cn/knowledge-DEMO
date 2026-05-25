@@ -1,8 +1,11 @@
 // App.jsx — root, routing, tweaks
+// 顶层路由：accounts(我的课程) → home(学练评) → learn/practice/report/aiqa/notes
+// 多产品状态：progressByProduct 按产品 id 独立保存学习/演练/评估进度
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTheme } from './theme.js';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakButton } from './components/TweaksPanel.jsx';
-import { KNOWLEDGE } from './data.js';
+import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, setActiveProduct } from './productCatalog.js';
+import { AccountHome } from './screens/AccountHome.jsx';
 import { HomeScreen, LearningScreen } from './screens/HomeLearn.jsx';
 import { PracticeScreen } from './screens/Practice.jsx';
 import { ReportScreen } from './screens/Report.jsx';
@@ -17,23 +20,39 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "strictMode": false
 }/*EDITMODE-END*/;
 
+function emptyProgress() {
+  return { learnedPoints: new Set(), practiced: false, reportReady: false, picks: [], finalMood: null };
+}
+
 function App() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const t = useTheme(tweaks.theme);
-  const dark = tweaks.theme === 'dark';
 
-  const [state, setState] = useState({
-    learnedPoints: new Set(),
-    practiced: false,
-    reportReady: false,
-    picks: [],
-    finalMood: null,
-  });
+  // 账号 / 产品 / 路由
+  const [accountId, setAccountId] = useState(ACCOUNTS[0].id);
+  const [productId, setProductId] = useState(null); // null = 停在 accounts 页
+  const [route, setRoute] = useState('accounts');
 
-  const [route, setRoute] = useState('home');
+  // 进度按 product id 独立保存
+  const [progressByProduct, setProgressByProduct] = useState({});
+
+  // 路由附带参数
   const [highlight, setHighlight] = useState(null);
   const [aiqaContextKp, setAiqaContextKp] = useState(null);
   const [aiqaInitialMode, setAiqaInitialMode] = useState('chat');
+
+  // 当前产品的 progress（如果还没有就给空）
+  const currentProgress = productId ? (progressByProduct[productId] || emptyProgress()) : emptyProgress();
+
+  // 给子组件用的 setState：仅更新当前产品的进度切片
+  const setCurrentProgress = useCallback((updater) => {
+    if (!productId) return;
+    setProgressByProduct(prev => {
+      const before = prev[productId] || emptyProgress();
+      const next = typeof updater === 'function' ? updater(before) : updater;
+      return { ...prev, [productId]: next };
+    });
+  }, [productId]);
 
   const go = useCallback((r, opts = {}) => {
     setRoute(r);
@@ -44,7 +63,34 @@ function App() {
     }
   }, []);
 
-  const pageKey = `${route}-${state.picks.length}`;
+  // 切换账号：回到该账号的 accounts 页，清空产品上下文
+  const switchAccount = useCallback((aid) => {
+    setAccountId(aid);
+    setProductId(null);
+    setRoute('accounts');
+  }, []);
+
+  // 切换产品：注入 window.SIMUGO_DATA，跳到该产品的 home（学练评）
+  const switchProduct = useCallback((pid) => {
+    if (!PRODUCTS[pid]) return;
+    setActiveProduct(pid);
+    setProductId(pid);
+    setRoute('home');
+    // 初始化该产品的进度切片
+    setProgressByProduct(prev => prev[pid] ? prev : { ...prev, [pid]: emptyProgress() });
+  }, []);
+
+  // 返回到账号首页（清空产品上下文）
+  const goAccounts = useCallback(() => {
+    setProductId(null);
+    setRoute('accounts');
+  }, []);
+
+  // 当前账号 & 产品
+  const account = ACCOUNT_INDEX[accountId];
+  const product = productId ? PRODUCTS[productId] : null;
+
+  const pageKey = `${route}-${productId || 'none'}-${currentProgress.picks.length}`;
 
   return (
     <>
@@ -60,12 +106,21 @@ function App() {
           overflowX: 'hidden', position: 'relative',
           display: 'flex', flexDirection: 'column',
         }}>
-          {route === 'home'     && <HomeScreen     t={t} state={state} go={go} />}
-          {route === 'learn'    && <LearningScreen t={t} state={state} setState={setState} go={go} highlight={highlight} />}
-          {route === 'practice' && <PracticeScreen t={t} state={state} setState={setState} go={go} tweaks={tweaks} />}
-          {route === 'report'   && <ReportScreen   t={t} state={state} go={go} />}
-          {route === 'aiqa'     && <AIQAScreen     t={t} go={go} contextKpId={aiqaContextKp} setContextKpId={setAiqaContextKp} initialMode={aiqaInitialMode} />}
-          {route === 'notes'    && <NotesScreen    t={t} go={go} />}
+          {route === 'accounts' && (
+            <AccountHome
+              t={t}
+              accountId={accountId}
+              switchAccount={switchAccount}
+              switchProduct={switchProduct}
+              progressByProduct={progressByProduct}
+            />
+          )}
+          {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} />}
+          {route === 'learn'    && product && <LearningScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} highlight={highlight} product={product} />}
+          {route === 'practice' && product && <PracticeScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} tweaks={tweaks} />}
+          {route === 'report'   && product && <ReportScreen   t={t} state={currentProgress} go={go} />}
+          {route === 'aiqa'     && product && <AIQAScreen     t={t} go={go} contextKpId={aiqaContextKp} setContextKpId={setAiqaContextKp} initialMode={aiqaInitialMode} />}
+          {route === 'notes'    && product && <NotesScreen    t={t} go={go} />}
         </div>
       </div>
 
@@ -87,14 +142,16 @@ function App() {
         <TweakToggle label="严苛模式（无弹药提示）" value={tweaks.strictMode}
           onChange={(v) => setTweak('strictMode', v)} />
         <TweakSection label="快捷" />
-        <TweakButton label="一键学完 8 个知识点" onClick={() => {
+        <TweakButton label="一键学完当前产品全部知识点" onClick={() => {
+          if (!product) return;
           const all = new Set();
-          KNOWLEDGE.forEach(m => m.points.forEach(p => all.add(p.id)));
-          setState(s => ({ ...s, learnedPoints: all }));
+          product.knowledge.forEach(m => m.points.forEach(p => all.add(p.id)));
+          setCurrentProgress(s => ({ ...s, learnedPoints: all }));
         }} />
-        <TweakButton label="重置进度" onClick={() => {
-          setState({ learnedPoints: new Set(), practiced: false, reportReady: false, picks: [], finalMood: null });
-          setRoute('home');
+        <TweakButton label="重置全部进度" onClick={() => {
+          setProgressByProduct({});
+          setProductId(null);
+          setRoute('accounts');
         }} />
       </TweaksPanel>
     </>

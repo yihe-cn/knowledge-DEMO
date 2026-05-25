@@ -3,11 +3,11 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
 import { QuizMode } from "./AIQuiz.jsx";
+import { streamChat } from "../lib/llmClient.js";
 
-// ─── 系统提示词 ────────────────────────────────────────────────
-function buildSystemPrompt(KNOWLEDGE) {
-  // 把知识库压缩成紧凑 JSON 喂给模型
-  const compact = KNOWLEDGE.map(m => ({
+// ─── 把知识库压缩成紧凑结构，发送给后端 ─────────────────────────
+function buildCompactKnowledge(KNOWLEDGE) {
+  return KNOWLEDGE.map(m => ({
     id: m.id, title: m.title,
     points: m.points.map(p => ({
       id: p.id, title: p.title,
@@ -16,28 +16,6 @@ function buildSystemPrompt(KNOWLEDGE) {
       rebuttals: (p.rebuttals || []).map(r => ({ q: r.q, a: r.approach })),
     })),
   }));
-  return `你是极氪 007 销售训练平台的"产品私教"，对象是 4S 店销售顾问（学员）。
-你的职责：用学员能听懂的话，帮他理解产品知识、想清楚客户对话怎么说。
-
-【硬性边界】
-- 只回答极氪 007 相关问题。如果学员问别的车型/品牌/通用知识，礼貌引导回 007。
-- 所有事实必须来自下方知识库。不要编参数、不要瞎讲。
-- 如果知识库没覆盖，明确说"这个我手里没有官方资料，建议查产品手册或问培训师"。
-
-【回答风格】
-- 像一个有耐心的资深同事，不是百科。短答案优先，不堆参数。
-- 客户对话相关的问题，给"思路 + 一句示范话术"，不要长篇大论。
-- 比较/对比类问题，先讲我们的事实，再讲差异，不要贬低竞品。
-
-【输出格式 —— 严格 JSON，不要 markdown 代码块】
-{
-  "answer": "你的回答正文，60-180 字最佳，可以用换行分段",
-  "citations": ["相关知识点 id 数组，例如 kp1-1。不相关不要硬塞"],
-  "followups": ["2-3 条学员可能想接着问的短问题，每条 ≤ 16 字"]
-}
-
-【知识库】
-${JSON.stringify(compact)}`;
 }
 
 // ─── 起手提示词 ────────────────────────────────────────────────
@@ -49,13 +27,25 @@ function contextStarters(kp) {
     `这个怎么用在对话里？举个例子`,
   ];
 }
-// 入口 B：全局进入（无上下文）
-const GLOBAL_STARTERS = [
-  '客户刚从特斯拉店出来，怎么开场？',
-  '北方客户问冬季续航怎么应对？',
-  '一句话讲清 800V 的好处',
-  '智驾对比 FSD 怎么讲不踩雷？',
-];
+// 入口 B：全局进入（无上下文）—— 每个产品定义自己的起手提示，否则用默认
+const DEFAULT_STARTERS = {
+  zeekr007: [
+    '客户刚从特斯拉店出来，怎么开场？',
+    '北方客户问冬季续航怎么应对？',
+    '一句话讲清 800V 的好处',
+    '智驾对比 FSD 怎么讲不踩雷？',
+  ],
+  pax: [
+    'KOL 主任问"你们和其他抗反流配方差异化在哪"，怎么开场？',
+    '医生质疑双歧杆菌数据 p 值不显著，怎么接？',
+    '一句话讲清淀粉-果胶复合物的协同机制',
+    'CMA 患儿伴反流场景，怎么推 Allernova AR？',
+  ],
+};
+function getGlobalStarters() {
+  const pid = window.SIMUGO_DATA?.PRODUCT?.id;
+  return DEFAULT_STARTERS[pid] || DEFAULT_STARTERS.zeekr007;
+}
 
 // ─── 主屏 ──────────────────────────────────────────────────────
 function AIQAScreen({ t, go, contextKpId, setContextKpId, initialMode }) {
@@ -117,7 +107,8 @@ function ModeSwitch({ t, mode, onChange }) {
 // ─── 聊天模式 ──────────────────────────────────────────────────
 function ChatMode({ t, contextKp, setContextKpId }) {
   const { KNOWLEDGE, KP_INDEX } = window.SIMUGO_DATA;
-  const SYSTEM_PROMPT = useMemo(() => buildSystemPrompt(KNOWLEDGE), [KNOWLEDGE]);
+  const COMPACT_KB = useMemo(() => buildCompactKnowledge(KNOWLEDGE), [KNOWLEDGE]);
+  const PRODUCT_META = window.SIMUGO_DATA?.PRODUCT?.meta || {};
 
   const [messages, setMessages] = useState([]);    // {role:'user'|'ai', text, citations?, followups?}
   const [input, setInput] = useState('');
@@ -125,16 +116,18 @@ function ChatMode({ t, contextKp, setContextKpId }) {
   const [openKpId, setOpenKpId] = useState(null);  // KP detail modal
   const scrollRef = useRef(null);
   const sessionIdRef = useRef(`n-chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  const sendingRef = useRef(false);  // 同步守卫，避免 setState 异步窗口被快速双击穿透
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, thinking]);
 
-  const starters = contextKp ? contextStarters(contextKp.point) : GLOBAL_STARTERS;
+  const starters = contextKp ? contextStarters(contextKp.point) : getGlobalStarters();
 
   const send = useCallback(async (text) => {
     const q = (text || '').trim();
-    if (!q || thinking) return;
+    if (!q || thinking || sendingRef.current) return;
+    sendingRef.current = true;
     setInput('');
 
     // 上下文注入：让模型知道学员当前在学什么
@@ -144,64 +137,97 @@ function ChatMode({ t, contextKp, setContextKpId }) {
     }
 
     const next = [...messages, { role: 'user', text: q }];
-    setMessages(next);
+    // 先在消息列表里插入一条空的 AI 消息，token 流入后逐步填充
+    setMessages([...next, { role: 'ai', text: '', citations: [], followups: [], streaming: true }]);
     setThinking(true);
 
+    const apiMessages = next.map(m => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.role === 'user' ? (m === next[next.length - 1] ? userPayload : m.text) : m.text,
+    }));
+
+    let streamed = '';
+    let resultMeta = null;
+    let errorMessage = '';
+
     try {
-      const apiMessages = [
-        ...next.map(m => ({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.role === 'user' ? (m === next[next.length - 1] ? userPayload : m.text) : m.text,
-        })),
-      ];
-      const raw = await window.claude.complete({
-        system: SYSTEM_PROMPT,
+      await streamChat({
+      endpoint: '/api/qa',
+      body: {
+        product_id: window.SIMUGO_DATA?.PRODUCT?.id,
+        product_meta: PRODUCT_META,
+        knowledge: COMPACT_KB,
         messages: apiMessages,
-      });
-      // 解析 JSON
-      let parsed = null;
-      try {
-        const cleaned = raw.replace(/^```json\s*|```\s*$/g, '').trim();
-        const start = cleaned.indexOf('{');
-        const end = cleaned.lastIndexOf('}');
-        parsed = JSON.parse(cleaned.slice(start, end + 1));
-      } catch (e) {
-        parsed = { answer: raw, citations: [], followups: [] };
+      },
+      onToken: (text) => {
+        streamed += text;
+        setMessages(m => {
+          const copy = [...m];
+          const last = copy[copy.length - 1];
+          if (last && last.role === 'ai' && last.streaming) {
+            copy[copy.length - 1] = { ...last, text: streamed };
+          }
+          return copy;
+        });
+      },
+      onResult: (data) => {
+        resultMeta = data || {};
+      },
+      onError: (err) => {
+        errorMessage = err?.message || 'AI 服务暂时不可用';
+      },
+      onDone: () => {},
+    });
+
+    setThinking(false);
+    setMessages(m => {
+      const copy = [...m];
+      const idx = copy.length - 1;
+      const last = copy[idx];
+      if (!last || !last.streaming) return copy;
+      if (errorMessage && !streamed) {
+        copy[idx] = {
+          role: 'ai',
+          text: formatAIQAError(errorMessage),
+          citations: [],
+          followups: [],
+        };
+      } else {
+        const validCites = ((resultMeta?.citations) || []).filter(id => KP_INDEX[id]);
+        copy[idx] = {
+          role: 'ai',
+          text: (resultMeta?.answer || streamed || '（这个问题我没想清楚，能换种说法吗？）').trim(),
+          citations: validCites,
+          followups: (resultMeta?.followups || []).slice(0, 3),
+        };
       }
-      const validCites = (parsed.citations || []).filter(id => KP_INDEX[id]);
-      const aiMsg = {
-        role: 'ai',
-        text: parsed.answer || '（这个问题我没想清楚，能换种说法吗？）',
-        citations: validCites,
-        followups: (parsed.followups || []).slice(0, 3),
-      };
-      const finalMessages = [...next, aiMsg];
-      setMessages(finalMessages);
       // 持久化笔记
       if (window.SIMUGO_NOTES) {
         window.SIMUGO_NOTES.upsert({
           id: sessionIdRef.current, type: 'chat',
           contextKpId: contextKp ? contextKp.point.id : null,
-          messages: finalMessages,
+          messages: copy,
         });
         window.notifyNotesChanged && window.notifyNotesChanged();
       }
-    } catch (e) {
-      setMessages(m => [...m, {
-        role: 'ai',
-        text: '网络不太顺，再试一次？',
-        citations: [], followups: [],
-      }]);
+      return copy;
+    });
     } finally {
-      setThinking(false);
+      sendingRef.current = false;
     }
-  }, [messages, thinking, contextKp, SYSTEM_PROMPT, KP_INDEX]);
+  }, [messages, thinking, contextKp, COMPACT_KB, PRODUCT_META, KP_INDEX]);
 
   const clearContext = () => setContextKpId(null);
   const resetChat = () => {
     setMessages([]);
     sessionIdRef.current = `n-chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   };
+  const lastMessage = messages[messages.length - 1];
+  const showThinkingBubble = thinking && !(
+    lastMessage?.role === 'ai' &&
+    lastMessage?.streaming &&
+    lastMessage?.text
+  );
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
@@ -250,7 +276,7 @@ function ChatMode({ t, contextKp, setContextKpId }) {
                 onCiteClick={(id) => setOpenKpId(id)}
                 onFollowup={send} />
             ))}
-            {thinking && <ThinkingBubble t={t} />}
+            {showThinkingBubble && <ThinkingBubble t={t} />}
           </>
         )}
       </div>
@@ -275,6 +301,17 @@ function ChatMode({ t, contextKp, setContextKpId }) {
       {openKpId && <KpDetailSheet t={t} kpId={openKpId} onClose={() => setOpenKpId(null)} />}
     </div>
   );
+}
+
+function formatAIQAError(message) {
+  const msg = String(message || '').trim();
+  if (/api[_ -]?key|OPENAI_API_KEY|missing credentials|401|unauthorized/i.test(msg)) {
+    return 'AI 服务还没有配置有效的 API Key。请检查后端 server/.env 里的 OPENAI_API_KEY、OPENAI_BASE_URL 和 MODEL_NAME。';
+  }
+  if (/failed to fetch|network|load failed|ECONNREFUSED|fetch/i.test(msg)) {
+    return '连不上 AI 后端服务。请确认 server 已启动，并且 VITE_API_BASE 指向正确的后端地址。';
+  }
+  return `AI 服务返回错误：${msg}`;
 }
 
 // ─── 空态 ──────────────────────────────────────────────────────
@@ -305,7 +342,7 @@ function EmptyState({ t, contextKp, starters, onPick }) {
       <div style={{ fontSize: 13, color: t.textSoft, textAlign: 'center', maxWidth: 280, lineHeight: 1.55, marginBottom: 24 }}>
         {contextKp
           ? '不懂的、想深挖的、想模拟客户提问，都可以直接问。'
-          : '只懂极氪 007——参数、应答思路、对比话术，挑你想清楚的问。'}
+          : `只懂${window.SIMUGO_DATA?.PRODUCT?.meta?.name || '当前产品'}——参数、应答思路、对比话术，挑你想清楚的问。`}
       </div>
 
       {/* 起手提示 */}
@@ -350,6 +387,8 @@ function EmptyState({ t, contextKp, starters, onPick }) {
 
 // ─── 对话气泡 ──────────────────────────────────────────────────
 function Bubble({ t, msg, onCiteClick, onFollowup }) {
+  if (msg.role === 'ai' && msg.streaming && !msg.text) return null;
+
   if (msg.role === 'user') {
     return (
       <div style={{ alignSelf: 'flex-end', maxWidth: '82%' }}>
@@ -380,7 +419,12 @@ function Bubble({ t, msg, onCiteClick, onFollowup }) {
           fontSize: 14, color: t.text, lineHeight: 1.65,
           whiteSpace: 'pre-wrap',
           borderTopLeftRadius: 6,
-        }}>{msg.text}</div>
+        }}>
+          {msg.text}
+          {msg.streaming && msg.text && (
+            <span style={{ color: t.accent, fontWeight: 700, marginLeft: 2 }}>|</span>
+          )}
+        </div>
 
         {/* 引用 */}
         {msg.citations && msg.citations.length > 0 && (

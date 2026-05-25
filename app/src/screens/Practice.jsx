@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
 import { MissedHint, AmmoStrip, KnowledgeLibrarySheet, KpDetailModal } from "./PracticeKnowledge.jsx";
+import { streamChat } from "../lib/llmClient.js";
 
 function PracticeScreen({ t, state, setState, go, tweaks }) {
   const { CUSTOMER, CUSTOMERS, CUSTOMER_INDEX, SCRIPT, KP_INDEX, KNOWLEDGE } = window.SIMUGO_DATA;
@@ -25,6 +26,7 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   const [showKpPop, setShowKpPop] = useState(null);
   const [finished, setFinished] = useState(false);
   const scrollRef = useRef(null);
+  const sendingRef = useRef(false);  // 同步守卫
 
   const strictMode = !!tweaks.strictMode;
 
@@ -111,7 +113,8 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
 
   // ─── Send a free-typed message via Claude (manual mode) ──
   const sendOpen = async () => {
-    if (!input.trim() || thinking || finished) return;
+    if (!input.trim() || thinking || finished || sendingRef.current) return;
+    sendingRef.current = true;
     const text = input.trim();
     setInput('');
     setShowHints(false);
@@ -119,10 +122,29 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
     setThinking(true);
     const currentTurn = SCRIPT[Math.min(picks.length, SCRIPT.length - 1)];
 
-    // Run AI; fall back to script if claude.complete isn't available
+    // 插入一个空 customer 气泡用于流式填充
+    let streamingInserted = false;
+    const onCustomerToken = (full) => {
+      setHistory(h => {
+        const next = [...h];
+        if (!streamingInserted) {
+          next.push({ role: 'customer', text: full, streaming: true });
+          streamingInserted = true;
+        } else {
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].streaming) { next[i] = { ...next[i], text: full }; break; }
+          }
+        }
+        return next;
+      });
+      // 注意：thinking 不在这里解除——只在整轮 aiTurn 完成后（含 coach 打分）才解锁，
+      // 否则用户能在评分到达前重复发送，导致 history 乱序。底部气泡渲染条件会
+      // 在有 streaming 气泡时隐藏 ThinkingDots，避免视觉上的双重 indicator。
+    };
+
     try {
-      const result = await aiTurn(text, history, mood, tweaks.difficulty, currentCustomer);
-      // Patch the just-added student message with eval cites/quality/missed
+      const result = await aiTurn(text, history, mood, tweaks.difficulty, currentCustomer, onCustomerToken);
+      // Patch student message with eval
       const missed = computeMissed(currentTurn?.recommendedKp, result.cites, result.quality);
       setHistory(h => {
         const next = [...h];
@@ -132,6 +154,19 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
             break;
           }
         }
+        // 把流式气泡定稿（去 streaming 标记，用最终 customerReply）
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].streaming) {
+            next[i] = { role: 'customer', text: result.customerReply };
+            break;
+          }
+        }
+        if (!streamingInserted) {
+          next.push({ role: 'customer', text: result.customerReply });
+        }
+        if (result.finished) {
+          next.push({ role: 'system', text: '客户接受了试驾邀约。本场演练结束。' });
+        }
         return next;
       });
       if (result.cites.length > 0) {
@@ -139,8 +174,6 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
         setTimeout(() => setShowKpPop(null), 2200);
       }
       applyMood(result.delta);
-      const customerSays = result.customerReply;
-      // Record pick
       const evalRec = {
         turnId: `t${picks.length + 1}`,
         optionId: 'open',
@@ -153,19 +186,14 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
         customerLine: history[history.length - 1]?.text || '',
       };
       setPicks(p => [...p, evalRec]);
-      setTimeout(() => {
-        setThinking(false);
-        if (result.finished) {
-          setHistory(h => [...h, { role: 'customer', text: customerSays }, { role: 'system', text: '客户接受了试驾邀约。本场演练结束。' }]);
-          finishSession(evalRec);
-        } else {
-          setHistory(h => [...h, { role: 'customer', text: customerSays }]);
-        }
-      }, 700);
+      setThinking(false);
+      if (result.finished) finishSession(evalRec);
     } catch (e) {
       console.error(e);
       setThinking(false);
       setHistory(h => [...h, { role: 'system', text: '(网络异常，已切换到脚本模式)' }]);
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -268,7 +296,7 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
             onOpenKp={openKpDetail}
           />
         )}
-        {thinking && <ThinkingDots t={t} />}
+        {thinking && !history.some(h => h.streaming) && <ThinkingDots t={t} />}
         {showKpPop && <KnowledgePopup t={t} kpId={showKpPop} />}
       </div>
 
@@ -328,56 +356,54 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
-// ─── AI turn via window.claude.complete ────────────────────
-async function aiTurn(studentText, history, mood, difficulty, customer) {
-  const { KNOWLEDGE, KP_INDEX } = window.SIMUGO_DATA;
+// ─── AI turn via 后端 LangGraph (SSE) ──────────────────────
+async function aiTurn(studentText, history, mood, difficulty, customer, onCustomerToken) {
+  const { KP_INDEX } = window.SIMUGO_DATA;
   const C = customer || window.SIMUGO_DATA.CUSTOMER;
-  const kpList = Object.entries(KP_INDEX).map(([id, ref]) => `${id}: ${ref.module.title}-${ref.point.title} (${ref.point.spec})`).join('\n');
-  const transcript = history.filter(h => h.role !== 'system').map(h => `${h.role === 'customer' ? '客户' : '销售'}: ${h.text}`).join('\n');
-  const difficultyHint = difficulty === 'tough'  ? '你今天心情有点烦，对销售比较挑剔，会主动质疑。' :
-                         difficulty === 'gentle' ? '你今天心情不错，态度较温和，但仍然理性。' :
-                                                   '你态度中性，理性。';
+  const kpList = Object.entries(KP_INDEX).map(([id, ref]) => ({
+    id, summary: `${ref.module.title}-${ref.point.title} (${ref.point.spec})`,
+  }));
 
-  const sys = `${C.promptSeed}\n\n${difficultyHint}\n\n当前你对销售的兴趣度=${Math.round(mood.interest)}/100, 信任度=${Math.round(mood.trust)}/100。`;
+  let streamedReply = '';
+  let result = null;
+  let errored = false;
 
-  const knowledgePoints = `本次场景涉及的产品知识点（用于评估销售是否引用）：\n${kpList}`;
+  await streamChat({
+    endpoint: '/api/practice/turn',
+    body: {
+      customer: C,
+      history: history.filter(h => h.role !== 'system').map(h => ({ role: h.role, text: h.text })),
+      student_text: studentText,
+      mood,
+      difficulty,
+      kp_list: kpList,
+    },
+    onToken: (text) => {
+      streamedReply += text;
+      if (onCustomerToken) onCustomerToken(streamedReply);
+    },
+    onResult: (data) => { result = data; },
+    onError: () => { errored = true; },
+  });
 
-  const prompt = `${sys}\n\n${knowledgePoints}\n\n已发生的对话：\n${transcript}\n\n销售刚才说："${studentText}"\n\n请输出严格 JSON（不要 markdown 代码块），格式：
-{
-  "customerReply": "你作为${C.name}的下一句话（1-2 句，<= 60 字）",
-  "finished": false,
-  "cites": ["销售这句话明确引用到的知识点 id 数组，可以为空"],
-  "quality": "good | mid | bad",
-  "skill": "主要技能维度：产品知识 | 异议处理 | 需求挖掘 | 沟通表达 | 推进成交",
-  "feedback": "一句话教练点评（<= 40 字），中文",
-  "delta": { "interest": -15~+15 的整数, "trust": -15~+15 的整数 }
-}
-评分细则：good = 共情/事实/具体；mid = 引用了参数但缺共情或反问；bad = 套话/贬低对手/回避。当销售已经多轮表现良好且对话推进到成交/试驾环节时，finished 设为 true。`;
+  if (errored && !result) return fallbackTurn(studentText, streamedReply);
 
-  let raw;
-  try {
-    raw = await window.claude.complete(prompt);
-  } catch (e) {
-    return fallbackTurn(studentText);
-  }
-  try {
-    const m = raw.match(/\{[\s\S]*\}/);
-    const json = JSON.parse(m ? m[0] : raw);
-    return {
-      customerReply: json.customerReply || '嗯。',
-      finished: !!json.finished,
-      cites: Array.isArray(json.cites) ? json.cites.filter(c => KP_INDEX[c]) : [],
-      quality: ['good', 'mid', 'bad'].includes(json.quality) ? json.quality : 'mid',
-      skill: json.skill || '沟通表达',
-      feedback: json.feedback || '回应已收到。',
-      delta: { interest: clamp(+json.delta?.interest || 0, -15, 15), trust: clamp(+json.delta?.trust || 0, -15, 15) },
-    };
-  } catch (e) {
-    return fallbackTurn(studentText);
-  }
+  const r = result || {};
+  return {
+    customerReply: (r.customerReply || streamedReply || '嗯。').trim(),
+    finished: !!r.finished,
+    cites: Array.isArray(r.cites) ? r.cites.filter(c => KP_INDEX[c]) : [],
+    quality: ['good', 'mid', 'bad'].includes(r.quality) ? r.quality : 'mid',
+    skill: r.skill || '沟通表达',
+    feedback: r.feedback || '回应已收到。',
+    delta: {
+      interest: clamp(+(r.delta?.interest) || 0, -15, 15),
+      trust: clamp(+(r.delta?.trust) || 0, -15, 15),
+    },
+  };
 }
 
-function fallbackTurn(studentText) {
+function fallbackTurn(studentText, partialReply) {
   // Crude keyword classifier as fallback
   const s = studentText;
   let quality = 'mid', delta = { interest: 2, trust: 0 }, cites = [], skill = '沟通表达';
@@ -386,11 +412,22 @@ function fallbackTurn(studentText) {
   else if (/激光雷达|OrinX|浩瀚智驾|FSD/.test(s)) { quality = 'good'; cites.push('kp2-1'); skill = '异议处理'; delta = { interest: 8, trust: 8 }; }
   else if (/优惠|便宜|降价|让一些/.test(s)) { quality = 'bad'; delta = { interest: -4, trust: -8 }; skill = '推进成交'; }
   else if (/放心|相信我|没问题/.test(s)) { quality = 'bad'; delta = { interest: -3, trust: -6 }; }
-  return { customerReply: '嗯…你具体说说？', finished: false, cites, quality, skill, feedback: '已记录回应。', delta };
+  return {
+    customerReply: (partialReply && partialReply.trim()) || '嗯…你具体说说？',
+    finished: false, cites, quality, skill, feedback: '已记录回应。', delta,
+  };
 }
 
 // ─── Scenario brief — opening mission card ─────────────────
 function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustomer, isZheng }) {
+  const productMeta = window.SIMUGO_DATA?.PRODUCT?.meta || {};
+  const storeContext = productMeta.storeContext || '前滩门店 · 周六下午';
+  const storeShort = storeContext.split('·')[0].trim();
+  const productName = productMeta.name || '极氪 007';
+  const scenarioCode = productMeta.scenarioCode || 'S01';
+  const scenarioGoals = productMeta.scenarioGoals || ['识别需求', '化解顾虑', '推进试驾'];
+  const scenarioBrief = productMeta.scenarioBrief || '';
+  const goalsLabel = scenarioGoals.map(g => `· ${g}`).join(' ');
   const [expanded, setExpanded] = useState(false);
 
   // ── Collapsed pill once conversation has begun ──────────
@@ -415,11 +452,11 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
             fontSize: 10, fontWeight: 800, flexShrink: 0,
             boxShadow: `1px 1px 2px ${t.sDark}, inset 0 1px 0 rgba(255,255,255,0.2)`,
           }}>◆</div>
-          <span style={{ fontSize: 10, fontWeight: 700, color: t.accent, letterSpacing: '0.1em', flexShrink: 0 }}>S01</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: t.accent, letterSpacing: '0.1em', flexShrink: 0 }}>{scenarioCode}</span>
           <div style={{ width: 1, height: 12, background: t.line, flexShrink: 0 }} />
-          <span style={{ fontSize: 12, fontWeight: 700, color: t.text, flexShrink: 0 }}>前滩门店</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: t.text, flexShrink: 0 }}>{storeShort}</span>
           <span style={{ fontSize: 11, color: t.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
-            · 识别需求 · 化解顾虑 · 推进试驾
+            {' '}{goalsLabel}
           </span>
           <span style={{ display: 'inline-flex', transform: expanded ? 'rotate(-90deg)' : 'rotate(90deg)', transition: 'transform .2s', flexShrink: 0 }}>
             <Icon name="arrow" size={11} color={t.textMute} />
@@ -434,15 +471,15 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
             animation: 'briefExpand .25s ease',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.1em' }}>训练场景 · S01</span>
-              <span style={{ fontSize: 10, color: t.textMute, fontWeight: 600 }}>极氪 007</span>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.1em' }}>训练场景 · {scenarioCode}</span>
+              <span style={{ fontSize: 10, color: t.textMute, fontWeight: 600 }}>{productName}</span>
             </div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>前滩门店 · 周六下午</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{storeContext}</div>
             <div style={{ fontSize: 12, color: t.textSoft, lineHeight: 1.6 }}>
-              客人背着电脑包，从隔壁特斯拉看完进来，理性、爱比较。
+              {scenarioBrief}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
-              {['识别需求', '化解顾虑', '推进试驾'].map((g, i) => (
+              {scenarioGoals.map((g, i) => (
                 <span key={i} style={{
                   fontSize: 10.5, padding: '3px 9px', borderRadius: 999,
                   background: `${t.accent}15`, color: t.accent, fontWeight: 600,
@@ -482,13 +519,13 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
           fontSize: 12, fontWeight: 800, flexShrink: 0,
           boxShadow: `1px 1px 2px ${t.sDark}, inset 0 1px 0 rgba(255,255,255,0.2)`,
         }}>◆</div>
-        <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.12em' }}>训练场景 · S01</span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.12em' }}>训练场景 · {scenarioCode}</span>
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, ${t.accent}30, transparent)` }} />
-        <span style={{ fontSize: 10, color: t.textMute, fontWeight: 600 }}>极氪 007</span>
+        <span style={{ fontSize: 10, color: t.textMute, fontWeight: 600 }}>{productName}</span>
       </div>
 
       <div style={{ fontSize: 17, fontWeight: 700, color: t.text, marginBottom: 10, lineHeight: 1.4 }}>
-        前滩门店 · 周六下午
+        {storeContext}
       </div>
 
       {!started && (

@@ -4,10 +4,10 @@ import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
 
 // ═══ HOME ═════════════════════════════════════════════════════════
-function HomeScreen({ t, state, go }) {
+function HomeScreen({ t, state, go, account, product, onBackToAccounts }) {
+  const learnTotal = product.meta.knowledgeTotal;
   const learnDone = state.learnedPoints.size;
-  const learnTotal = 8;
-  const learnPct = learnDone / learnTotal;
+  const learnPct = learnTotal > 0 ? learnDone / learnTotal : 0;
   const practiced = state.practiced;
   const reportReady = state.reportReady;
 
@@ -15,9 +15,24 @@ function HomeScreen({ t, state, go }) {
     <div style={{ padding: '4px 18px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Greeting */}
       <div>
-        <div style={{ fontSize: 13, color: t.textMute, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 600 }}>STORE · 上海前滩</div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: t.text, marginTop: 6, letterSpacing: '-0.01em' }}>早上好，林笙</div>
-        <div style={{ fontSize: 14, color: t.textSoft, marginTop: 6 }}>今日训练任务：极氪 007 产品力 · 第 3 天</div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 13, color: t.textMute, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 600,
+        }}>
+          {onBackToAccounts && (
+            <span
+              onClick={onBackToAccounts}
+              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <Icon name="back" size={14} color={t.textMute} stroke={2} />
+              <span>我的课程</span>
+            </span>
+          )}
+          <span style={{ color: t.textMute, opacity: 0.5 }}>·</span>
+          <span>{account.orgShort}</span>
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: t.text, marginTop: 6, letterSpacing: '-0.01em' }}>早上好，{account.name}</div>
+        <div style={{ fontSize: 14, color: t.textSoft, marginTop: 6 }}>今日训练任务：{product.meta.name} 产品力 · 第 3 天</div>
       </div>
 
       {/* Closed-loop journey card */}
@@ -39,7 +54,7 @@ function HomeScreen({ t, state, go }) {
         t={t}
         kind="learn"
         title="学习课程"
-        sub={`极氪 007 · ${learnDone}/${learnTotal} 个知识点已学完`}
+        sub={`${product.meta.name} · ${learnDone}/${learnTotal} 个知识点已学完`}
         progress={learnPct}
         status={learnPct >= 1 ? 'done' : 'active'}
         icon="book"
@@ -51,7 +66,7 @@ function HomeScreen({ t, state, go }) {
         t={t}
         kind="practice"
         title="场景演练"
-        sub="客户：郑先生 · 4-6 轮对话"
+        sub={product.meta.practiceSummary}
         progress={practiced ? 1 : 0}
         status={learnPct < 1 ? 'locked' : practiced ? 'done' : 'active'}
         icon="chat"
@@ -153,8 +168,10 @@ function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, on
 }
 
 // ═══ LEARNING ═══════════════════════════════════════════════════════
-function LearningScreen({ t, state, setState, go }) {
-  const { KNOWLEDGE } = window.SIMUGO_DATA;
+function LearningScreen({ t, state, setState, go, product }) {
+  const KNOWLEDGE = product ? product.knowledge : window.SIMUGO_DATA.KNOWLEDGE;
+  const productName = product ? product.meta.name : (window.SIMUGO_DATA.PRODUCT?.meta?.name || '');
+  const totalKp = product ? product.meta.knowledgeTotal : KNOWLEDGE.reduce((a, m) => a + m.points.length, 0);
   const [openMod, setOpenMod] = useState(KNOWLEDGE[0].id);
 
   const togglePoint = (pid) => {
@@ -167,7 +184,7 @@ function LearningScreen({ t, state, setState, go }) {
 
   return (
     <div style={{ padding: '4px 18px 18px' }}>
-      <TopBar t={t} title="学习课程 · 极氪 007" onBack={() => go('home')} />
+      <TopBar t={t} title={`学习课程 · ${productName}`} onBack={() => go('home')} />
       <div style={{ fontSize: 13, color: t.textSoft, padding: '0 4px 14px', lineHeight: 1.55 }}>
         每个知识点包含产品参数与<b style={{ color: t.accent }}>销售应用提示</b>——告诉你这个知识点在客户对话中怎么用。
       </div>
@@ -267,10 +284,10 @@ function LearningScreen({ t, state, setState, go }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12, color: t.textSoft }}>已学完</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: t.text }}>{state.learnedPoints.size} / 8 个知识点</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: t.text }}>{state.learnedPoints.size} / {totalKp} 个知识点</div>
           </div>
-          <PillButton t={t} primary disabled={state.learnedPoints.size < 8} onClick={() => go('practice')}>
-            {state.learnedPoints.size < 8 ? '完成全部以解锁演练' : '进入演练 →'}
+          <PillButton t={t} primary disabled={state.learnedPoints.size < totalKp} onClick={() => go('practice')}>
+            {state.learnedPoints.size < totalKp ? '完成全部以解锁演练' : '进入演练 →'}
           </PillButton>
         </div>
       </BottomCTA>

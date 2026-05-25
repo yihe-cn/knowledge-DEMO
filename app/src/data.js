@@ -522,7 +522,5 @@ export const CUSTOMERS = [
 export const CUSTOMER_INDEX = {};
 CUSTOMERS.forEach(c => { CUSTOMER_INDEX[c.id] = c; });
 
-// Back-compat shim — some screens still read window.SIMUGO_DATA at call sites.
-if (typeof window !== 'undefined') {
-  window.SIMUGO_DATA = { KNOWLEDGE, CUSTOMER, CUSTOMERS, CUSTOMER_INDEX, SCRIPT, KP_INDEX };
-}
+// NOTE: 多产品架构在 productCatalog.js 中初始化，会在那里调用 setActiveProduct
+// 触发 window.SIMUGO_DATA 的写入。这里不再直接挂载。
