@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-import json
-import re
+import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from ..schemas import PracticeTurnRequest
-from ..graphs.practice_graph import prepare, customer_model, coach_model
+from ..graphs._retrieval import RetrievalError, UnknownProductError
+from ..graphs.practice_graph import coach_model, customer_model, prepare
+from ..graphs.suggestor_graph import GenerationError, generate_suggestions
+from ..json_utils import parse_llm_json
+from ..schemas import PracticeSuggestRequest, PracticeTurnRequest
+from ..security import require_internal_token
 from ..sse import sse_event
 
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# /practice/suggest 走 RAG（拉 KB chunk + 调 LLM），独立放进带鉴权的 router
+suggest_router = APIRouter(dependencies=[Depends(require_internal_token)])
 
 
 def _clamp(v, lo, hi):
@@ -22,13 +31,8 @@ def _clamp(v, lo, hi):
 
 
 def _parse_coach(raw: str) -> dict:
-    m = re.search(r"\{[\s\S]*\}", raw or "")
-    if not m:
-        return {}
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return {}
+    data = parse_llm_json(raw, default={}, prefer_keys=("quality", "delta", "feedback"))
+    return data if isinstance(data, dict) else {}
 
 
 @router.post("/practice/turn")
@@ -71,3 +75,21 @@ async def practice_turn(req: PracticeTurnRequest):
             yield sse_event("done", {})
 
     return EventSourceResponse(gen())
+
+
+@suggest_router.post("/practice/suggest")
+async def practice_suggest(req: PracticeSuggestRequest):
+    """点 ✦ 时拉一组思路提示。非流式，整组 JSON 返回。
+
+    错误语义：
+      - UnknownProductError → 400（前端传了未知 product_code）
+      - RetrievalError / GenerationError → 503（基础设施故障）
+      - 真"无可生成的建议" → 200 + 空数组
+    """
+    try:
+        return await generate_suggestions(req)
+    except UnknownProductError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (RetrievalError, GenerationError) as e:
+        logger.warning("practice_suggest infra error: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))

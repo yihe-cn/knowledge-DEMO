@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { neuRaised, neuInset, neuFlat } from '../theme.js';
 import { Card, Icon } from '../components/Primitives.jsx';
-import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS } from '../productCatalog.js';
+import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, REMOTE_PRODUCT_IDS } from '../productCatalog.js';
 
 function AccountHome({ t, accountId, switchAccount, switchProduct, progressByProduct }) {
   const account = ACCOUNT_INDEX[accountId] || ACCOUNTS[0];
@@ -20,6 +20,12 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
 
+  // 账号自带的静态产品在前，后端动态产品（admin 新建）追加在后
+  const visibleIds = [
+    ...account.productIds,
+    ...Array.from(REMOTE_PRODUCT_IDS).filter(id => !account.productIds.includes(id)),
+  ];
+
   return (
     <div style={{ padding: '4px 18px 28px', display: 'flex', flexDirection: 'column', gap: 22 }}>
       <AccountSwitcher
@@ -33,7 +39,7 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
 
       <div>
         <div style={{ fontSize: 12, color: t.textMute, letterSpacing: '0.12em', fontWeight: 700 }}>
-          我的课程 · {account.productIds.length} 门
+          我的课程 · {visibleIds.length} 门
         </div>
         <div style={{ fontSize: 22, fontWeight: 700, color: t.text, marginTop: 6, letterSpacing: '-0.01em' }}>
           选择今天要演练的产品
@@ -41,8 +47,9 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {account.productIds.map(pid => {
+        {visibleIds.map(pid => {
           const product = PRODUCTS[pid];
+          if (!product) return null;
           const progress = progressByProduct[pid] || emptyProgress();
           return (
             <ProductCard
@@ -154,7 +161,8 @@ function Avatar({ t, account, size = 40 }) {
 
 function ProductCard({ t, product, progress, onClick }) {
   const { meta } = product;
-  const learnPct = progress.learnedPoints.size / meta.knowledgeTotal;
+  const total = meta.knowledgeTotal || 0;
+  const learnPct = total > 0 ? progress.learnedPoints.size / total : 0;
   const stageLabel = (() => {
     if (progress.reportReady) return '已完成评估';
     if (progress.practiced)   return '待查看评估';

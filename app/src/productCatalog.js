@@ -114,28 +114,95 @@ ACCOUNTS.forEach(a => { ACCOUNT_INDEX[a.id] = a; });
 
 let _activeProductId = null;
 
-export function setActiveProduct(productId) {
-  const p = PRODUCTS[productId];
+// ─── 后端动态产品 ──────────────────────────────────────────────
+// admin 创建的产品通过 /api/courses 拉到前端，与上面静态注册的 PRODUCTS 合并。
+// meta.fromBackend = true 用于在 AccountHome 区分来源。
+const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE)
+  || 'http://localhost:8000';
+
+export const REMOTE_PRODUCT_IDS = new Set();
+
+function applyWindowData(p) {
+  if (typeof window === 'undefined') return;
+  window.SIMUGO_DATA = {
+    KNOWLEDGE: p.knowledge,
+    CUSTOMER: p.customer,
+    CUSTOMERS: p.customers,
+    CUSTOMER_INDEX: p.customerIndex,
+    SCRIPT: p.script,
+    KP_INDEX: p.kpIndex,
+    PRODUCT: p,
+  };
+}
+
+export async function loadRemoteProducts() {
+  try {
+    const resp = await fetch(`${API_BASE}/api/courses`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const items = data.items || [];
+    items.forEach(item => {
+      // 已有静态注册（带 knowledge）的同 id 完全不动，避免后端空 meta 覆盖静态丰富 meta
+      if (PRODUCTS[item.id] && PRODUCTS[item.id].knowledge) return;
+      PRODUCTS[item.id] = {
+        id: item.id,
+        meta: item.meta,
+        knowledge: null, // 标记尚未加载详情，进入产品时再 fetch
+        customer: null,
+        customers: [],
+        customerIndex: {},
+        script: [],
+        kpIndex: {},
+      };
+      REMOTE_PRODUCT_IDS.add(item.id);
+    });
+    return items.map(i => i.id);
+  } catch (e) {
+    console.warn('[productCatalog] loadRemoteProducts failed:', e);
+    return [];
+  }
+}
+
+export async function ensureProductLoaded(productId) {
+  const existing = PRODUCTS[productId];
+  if (existing && existing.knowledge) return existing; // 已加载（静态或缓存）
+  if (!REMOTE_PRODUCT_IDS.has(productId) && !existing) {
+    console.warn('[productCatalog] unknown product:', productId);
+    return null;
+  }
+  const resp = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(productId)}`);
+  if (!resp.ok) throw new Error(`fetch course ${productId} failed: HTTP ${resp.status}`);
+  const data = await resp.json();
+  const p = buildIndices({
+    id: data.id,
+    meta: data.meta,
+    knowledge: data.knowledge || [],
+    customer: data.customer,
+    customers: data.customers && data.customers.length ? data.customers : [data.customer],
+    script: data.script || [],
+  });
+  PRODUCTS[productId] = p;
+  return p;
+}
+
+export async function setActiveProduct(productId) {
+  let p = PRODUCTS[productId];
+  if (!p || !p.knowledge) {
+    p = await ensureProductLoaded(productId);
+  }
   if (!p) {
     console.warn('[productCatalog] unknown product:', productId);
-    return;
+    return null;
   }
   _activeProductId = productId;
-  if (typeof window !== 'undefined') {
-    window.SIMUGO_DATA = {
-      KNOWLEDGE: p.knowledge,
-      CUSTOMER: p.customer,
-      CUSTOMERS: p.customers,
-      CUSTOMER_INDEX: p.customerIndex,
-      SCRIPT: p.script,
-      KP_INDEX: p.kpIndex,
-      PRODUCT: p,
-    };
-  }
+  applyWindowData(p);
+  return p;
 }
 
 export function getActiveProductId() { return _activeProductId; }
 export function getActiveProduct() { return _activeProductId ? PRODUCTS[_activeProductId] : null; }
 
-// 初始化默认产品，确保模块加载时 window.SIMUGO_DATA 立刻可用
-setActiveProduct('zeekr007');
+// 初始化默认产品（静态注册，已带 knowledge），同步写入 window.SIMUGO_DATA。
+// 不走 setActiveProduct（已改 async）以保证模块加载时立即可用。
+_activeProductId = 'zeekr007';
+applyWindowData(PRODUCTS.zeekr007);

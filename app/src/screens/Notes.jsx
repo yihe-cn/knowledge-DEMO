@@ -76,6 +76,7 @@ function NotesScreen({ t, go }) {
   const [notes, setNotes] = useState(() => Notes.load());
   const [filter, setFilter] = useState('all'); // all | chat | quiz
   const [openId, setOpenId] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const refresh = () => setNotes(Notes.load());
 
@@ -103,14 +104,25 @@ function NotesScreen({ t, go }) {
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <TopBar t={t} title="我的笔记" onBack={() => go('home')}
         right={notes.length > 0 ? (
-          <div onClick={() => {
-            if (confirm('清空全部笔记？此操作不可撤销。')) {
-              Notes.clear(); notifyNotesChanged(); refresh();
-            }
-          }} style={{
-            ...neuFlat(t, 999), padding: '6px 11px', cursor: 'pointer',
-            fontSize: 11, color: t.textMute, fontWeight: 600,
-          }}>清空</div>
+          confirmClear ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div onClick={() => {
+                Notes.clear(); notifyNotesChanged(); refresh(); setConfirmClear(false);
+              }} style={{
+                ...neuFlat(t, 999), padding: '6px 11px', cursor: 'pointer',
+                fontSize: 11, color: t.bad, fontWeight: 700,
+              }}>确认清空</div>
+              <div onClick={() => setConfirmClear(false)} style={{
+                ...neuFlat(t, 999), padding: '6px 11px', cursor: 'pointer',
+                fontSize: 11, color: t.textMute, fontWeight: 600,
+              }}>取消</div>
+            </div>
+          ) : (
+            <div onClick={() => setConfirmClear(true)} style={{
+              ...neuFlat(t, 999), padding: '6px 11px', cursor: 'pointer',
+              fontSize: 11, color: t.textMute, fontWeight: 600,
+            }}>清空</div>
+          )
         ) : null}
       />
 

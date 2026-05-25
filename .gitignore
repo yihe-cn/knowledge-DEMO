@@ -1,0 +1,17 @@
+.DS_Store
+**/.DS_Store
+
+node_modules/
+**/node_modules/
+
+.env
+.env.local
+.env.*.local
+
+server/uploads/
+server/.venv/
+server/.pytest_cache/
+server/**/__pycache__/
+
+admin/dist/
+admin/tsconfig.tsbuildinfo

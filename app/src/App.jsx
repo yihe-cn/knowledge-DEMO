@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTheme } from './theme.js';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakButton } from './components/TweaksPanel.jsx';
-import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, setActiveProduct } from './productCatalog.js';
+import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, setActiveProduct, loadRemoteProducts, ensureProductLoaded } from './productCatalog.js';
 import { AccountHome } from './screens/AccountHome.jsx';
 import { HomeScreen, LearningScreen } from './screens/HomeLearn.jsx';
 import { PracticeScreen } from './screens/Practice.jsx';
@@ -35,6 +35,14 @@ function App() {
 
   // 进度按 product id 独立保存
   const [progressByProduct, setProgressByProduct] = useState({});
+
+  // 远端产品列表（admin 创建的产品）加载完后触发一次 re-render
+  const [remoteLoaded, setRemoteLoaded] = useState(0);
+  useEffect(() => {
+    loadRemoteProducts().then(ids => {
+      if (ids.length) setRemoteLoaded(n => n + 1);
+    });
+  }, []);
 
   // 路由附带参数
   const [highlight, setHighlight] = useState(null);
@@ -70,13 +78,26 @@ function App() {
     setRoute('accounts');
   }, []);
 
-  // 切换产品：注入 window.SIMUGO_DATA，跳到该产品的 home（学练评）
-  const switchProduct = useCallback((pid) => {
+  // 切换产品：异步加载（远端产品首次进入会拉详情），再注入 window.SIMUGO_DATA
+  // 用 ref 跟踪最新一次请求，避免快速连点时先发起的请求后返回覆盖新选择
+  const switchSeqRef = useRef(0);
+  const switchProduct = useCallback(async (pid) => {
     if (!PRODUCTS[pid]) return;
-    setActiveProduct(pid);
+    const seq = ++switchSeqRef.current;
+    try {
+      await ensureProductLoaded(pid);
+    } catch (e) {
+      console.warn('[App] load product failed:', pid, e);
+      if (seq === switchSeqRef.current) {
+        alert(`加载课程失败：${pid}\n${e.message || e}`);
+      }
+      return;
+    }
+    if (seq !== switchSeqRef.current) return; // 已被更晚的请求取代
+    await setActiveProduct(pid);
+    if (seq !== switchSeqRef.current) return;
     setProductId(pid);
     setRoute('home');
-    // 初始化该产品的进度切片
     setProgressByProduct(prev => prev[pid] ? prev : { ...prev, [pid]: emptyProgress() });
   }, []);
 
@@ -90,7 +111,9 @@ function App() {
   const account = ACCOUNT_INDEX[accountId];
   const product = productId ? PRODUCTS[productId] : null;
 
-  const pageKey = `${route}-${productId || 'none'}-${currentProgress.picks.length}`;
+  // Keep the page mounted when practice commits picks into product progress.
+  // Remounting on picks length reset the finished screen before users could open the report.
+  const pageKey = `${route}-${productId || 'none'}`;
 
   return (
     <>

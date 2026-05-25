@@ -839,8 +839,10 @@ function collectFallbackQuestions(KNOWLEDGE, contextKp, count) {
 function buildAnswerOptions(question, kp) {
   // 选项兜底：模拟好/中/差三档
   if (!kp) return [{ text: '抱歉，没有合适的选项可参考。' }];
+  const voice = kp.point.customerVoice ? `比如：${kp.point.customerVoice}` : '';
+  const goodText = [kp.point.sales.replace(/。$/, ''), voice].filter(Boolean).join('。') + '。';
   return [
-    { quality: 'good', text: `${kp.point.sales.replace(/。$/, '')}。比如：${kp.point.customerVoice || ''}` },
+    { quality: 'good', text: goodText },
     { quality: 'mid',  text: kp.point.spec.slice(0, 60) + (kp.point.spec.length > 60 ? '…' : '') },
     { quality: 'bad',  text: '这个您放心，我们做的很专业的。' },
   ];

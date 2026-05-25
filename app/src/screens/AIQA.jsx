@@ -138,8 +138,23 @@ function ChatMode({ t, contextKp, setContextKpId }) {
 
     const next = [...messages, { role: 'user', text: q }];
     // 先在消息列表里插入一条空的 AI 消息，token 流入后逐步填充
-    setMessages([...next, { role: 'ai', text: '', citations: [], followups: [], streaming: true }]);
+    setMessages([...next, { role: 'ai', text: '', citations: [], followups: [], ragCitations: [], taggedKps: [], streaming: true }]);
     setThinking(true);
+
+    // 临时收集 RAG 事件
+    let ragCitations = [];
+    let taggedKps = [];
+    let fallbackReason = '';  // 非空 = verifier 拒绝了原答案
+    const patchLastAi = (patch) => {
+      setMessages(m => {
+        const copy = [...m];
+        const last = copy[copy.length - 1];
+        if (last && last.role === 'ai' && last.streaming) {
+          copy[copy.length - 1] = { ...last, ...patch };
+        }
+        return copy;
+      });
+    };
 
     const apiMessages = next.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
@@ -173,6 +188,17 @@ function ChatMode({ t, contextKp, setContextKpId }) {
       onResult: (data) => {
         resultMeta = data || {};
       },
+      onCitations: (items) => {
+        ragCitations = items || [];
+        patchLastAi({ ragCitations });
+      },
+      onTaggedKps: (items) => {
+        taggedKps = items || [];
+        patchLastAi({ taggedKps });
+      },
+      onFallback: (data) => {
+        fallbackReason = (data && data.reason) || 'verifier_failed';
+      },
       onError: (err) => {
         errorMessage = err?.message || 'AI 服务暂时不可用';
       },
@@ -193,11 +219,26 @@ function ChatMode({ t, contextKp, setContextKpId }) {
           followups: [],
         };
       } else {
-        const validCites = ((resultMeta?.citations) || []).filter(id => KP_INDEX[id]);
+        // resultMeta.citations 现在是 RAG chunk-level [{index,chunk_id,doc_name,slide_index,snippet}]
+        // 老结构里 citations 字段是 KP_INDEX 的 id 数组（产品自带 KP），保持向后兼容：
+        // - 旧产品（无后端 RAG）：citations 字段如果是字符串数组就走 KP_INDEX
+        // - 新 RAG：放到 ragCitations
+        const rawCitations = resultMeta?.citations;
+        const ragCites = Array.isArray(rawCitations) && rawCitations.length && typeof rawCitations[0] === 'object'
+          ? rawCitations
+          : ragCitations;
+        const legacyCites = Array.isArray(rawCitations) && rawCitations.length && typeof rawCitations[0] === 'string'
+          ? rawCitations.filter(id => KP_INDEX[id])
+          : [];
+        const finalTaggedKps = resultMeta?.tagged_kps || taggedKps;
         copy[idx] = {
           role: 'ai',
           text: (resultMeta?.answer || streamed || '（这个问题我没想清楚，能换种说法吗？）').trim(),
-          citations: validCites,
+          rawAnswer: resultMeta?.raw_answer || null,
+          fallbackReason,
+          citations: legacyCites,
+          ragCitations: ragCites,
+          taggedKps: finalTaggedKps,
           followups: (resultMeta?.followups || []).slice(0, 3),
         };
       }
@@ -426,7 +467,62 @@ function Bubble({ t, msg, onCiteClick, onFollowup }) {
           )}
         </div>
 
-        {/* 引用 */}
+        {/* Verifier 降级提示：原答案被拒，正文已替换为安全提示文本 */}
+        {msg.fallbackReason && (
+          <div style={{
+            marginTop: 6, padding: '6px 10px', borderRadius: 10,
+            background: `${t.warn || '#c98a00'}18`, border: `1px solid ${t.warn || '#c98a00'}44`,
+            fontSize: 11, color: t.warn || '#c98a00', fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 6,
+          }} title={msg.rawAnswer ? `原回答被 Verifier 拒绝（${msg.fallbackReason}），已替换为提示文本` : msg.fallbackReason}>
+            <Icon name="alert" size={11} color={t.warn || '#c98a00'} stroke={2.2} />
+            <span>答案已降级（{msg.fallbackReason}）</span>
+          </div>
+        )}
+
+        {/* RAG 来源（chunk 级，新链路） */}
+        {msg.ragCitations && msg.ragCitations.length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {msg.ragCitations.map((c) => (
+              <div key={c.chunk_id} title={c.snippet} style={{
+                padding: '6px 10px 6px 8px', borderRadius: 10,
+                background: t.surface2,
+                display: 'flex', alignItems: 'center', gap: 6,
+                boxShadow: `1.5px 1.5px 3px ${t.sDark}, -1.5px -1.5px 3px ${t.sLight}`,
+                fontSize: 11, color: t.textSoft, fontWeight: 600,
+                maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 18, height: 18, borderRadius: 6, background: t.accent, color: '#fff', fontSize: 10,
+                }}>{c.index}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {c.doc_name || `doc#${c.doc_id}`}{(c.slide_indices && c.slide_indices.length)
+                    ? ` · p${c.slide_indices.join(',')}`
+                    : (c.slide_index ? ` · p${c.slide_index}` : '')}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* tagged KP chips（新链路：后端打的 KP 标签） */}
+        {msg.taggedKps && msg.taggedKps.length > 0 && (
+          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {msg.taggedKps.map(k => (
+              <div key={k.kp_id} style={{
+                padding: '4px 9px', borderRadius: 999,
+                background: `linear-gradient(135deg, ${t.accent}18, ${t.accentSoft}10)`,
+                fontSize: 11, color: t.accent, fontWeight: 700,
+                border: `1px solid ${t.accent}33`,
+              }}>
+                # {k.name}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 引用（旧 KP_INDEX 链路，保留向后兼容） */}
         {msg.citations && msg.citations.length > 0 && (
           <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {msg.citations.map(id => {

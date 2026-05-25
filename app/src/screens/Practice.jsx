@@ -3,22 +3,30 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { neuFlat, neuRaised, neuInset } from "../theme.js";
 import { Card, PillButton, Icon, TopBar } from "../components/Primitives.jsx";
 import { MissedHint, AmmoStrip, KnowledgeLibrarySheet, KpDetailModal } from "./PracticeKnowledge.jsx";
-import { streamChat } from "../lib/llmClient.js";
+import { streamChat, postJSON } from "../lib/llmClient.js";
 
 function PracticeScreen({ t, state, setState, go, tweaks }) {
-  const { CUSTOMER, CUSTOMERS, CUSTOMER_INDEX, SCRIPT, KP_INDEX, KNOWLEDGE } = window.SIMUGO_DATA;
+  const { CUSTOMER, CUSTOMERS, CUSTOMER_INDEX, SCRIPT, KP_INDEX, PRODUCT } = window.SIMUGO_DATA;
 
-  const [customerId, setCustomerId] = useState('zheng');
+  const [customerId, setCustomerId] = useState(() => (CUSTOMERS && CUSTOMERS[0]?.id) || 'zheng');
   const currentCustomer = CUSTOMER_INDEX[customerId] || CUSTOMER;
-  const isZheng = customerId === 'zheng'; // 只有郑先生有完整 SCRIPT
+  const hasScript = Array.isArray(SCRIPT) && SCRIPT.length > 0;
+  // 只有静态产品里的"郑先生"附带完整 SCRIPT；后端产品 SCRIPT=[]，走 open 模式
+  const isZheng = customerId === 'zheng' && hasScript;
 
   const [started, setStarted] = useState(false);
   const [history, setHistory] = useState([]);
   const [mood, setMood] = useState({ interest: 50, trust: 40 });
   const [picks, setPicks] = useState([]);          // student message log + AI eval per turn
+  const picksRef = useRef([]);                      // always-current mirror; avoids stale closure in finishSession
   const [thinking, setThinking] = useState(false);
   const [input, setInput] = useState('');
   const [showHints, setShowHints] = useState(false);
+  const [hints, setHints] = useState([]);
+  const [hintsLoading, setHintsLoading] = useState(false);
+  const [hintsError, setHintsError] = useState('');
+  const [hintsMeta, setHintsMeta] = useState([]);   // cites_meta — 显示"依据 N 条资料"
+  const hintReqRef = useRef({ seq: 0, controller: null });
   const [showProfile, setShowProfile] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);     // 📚 full ammo library
   const [kpDetailId, setKpDetailId] = useState(null);        // open KP detail modal
@@ -29,6 +37,10 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   const sendingRef = useRef(false);  // 同步守卫
 
   const strictMode = !!tweaks.strictMode;
+
+  useEffect(() => {
+    picksRef.current = picks;
+  }, [picks]);
 
   // KPs the student has *actually cited* in their messages so far
   const citedKp = useMemo(() => {
@@ -85,8 +97,83 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
     return () => clearTimeout(id);
   }, [picks.length, tweaks.path, thinking, finished, started, isZheng]);
 
-  // Hints derived from current expected turn
-  const hintOptions = SCRIPT[Math.min(picks.length, SCRIPT.length - 1)]?.options || [];
+  // 客户最新一句变化 → 清空 hints，让下次点 ✦ 重新拉
+  const lastCustomerText = useMemo(() => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'customer' && !history[i].streaming) return history[i].text;
+    }
+    return '';
+  }, [history]);
+  // 客户回话变化时：作废所有在飞请求（先 bump seq，让任何已 await 通过 abort 检查的回调也 落不到 state），
+  // 再 abort 网络层；最后清空 UI 状态。注意必须同步清 hintsLoading，
+  // 否则旧请求的 finally 会因为 seq 不匹配而跳过 setHintsLoading(false)，造成永久 loading 锁死按钮。
+  useEffect(() => {
+    hintReqRef.current.seq += 1;
+    if (hintReqRef.current.controller) {
+      hintReqRef.current.controller.abort();
+      hintReqRef.current.controller = null;
+    }
+    setHints([]);
+    setHintsMeta([]);
+    setHintsError('');
+    setHintsLoading(false);
+  }, [lastCustomerText]);
+
+  const fetchHints = useCallback(async () => {
+    if (hintsLoading) return;
+    // 给本次请求分配序号 + AbortController，旧请求若还在飞中先 abort 并丢弃结果
+    if (hintReqRef.current.controller) hintReqRef.current.controller.abort();
+    const mySeq = ++hintReqRef.current.seq;
+    const controller = new AbortController();
+    hintReqRef.current.controller = controller;
+
+    setHintsLoading(true);
+    setHintsError('');
+    try {
+      // PRODUCT.id 是 'pax' / 'zeekr007'，对应后端 Product.code
+      const productCode = PRODUCT?.id || null;
+      const data = await postJSON({
+        endpoint: '/api/practice/suggest',
+        body: {
+          customer: currentCustomer,
+          history: history.filter(h => h.role !== 'system' && !h.streaming)
+            .map(h => ({ role: h.role, text: h.text })),
+          mood,
+          difficulty: tweaks.difficulty,
+          kp_list: Object.entries(KP_INDEX).map(([id, ref]) => ({
+            id, summary: `${ref.module.title}-${ref.point.title} (${ref.point.spec})`,
+          })),
+          product_code: productCode,
+        },
+        signal: controller.signal,
+      });
+      // 落地前再核对序号：被新请求/客户回话清空过的话直接丢弃
+      if (mySeq !== hintReqRef.current.seq) return;
+      const list = Array.isArray(data?.suggestions) ? data.suggestions : [];
+      const meta = Array.isArray(data?.cites_meta) ? data.cites_meta : [];
+      setHints(list);
+      setHintsMeta(meta);
+      if (list.length === 0) setHintsError('AI 没生成出思路，换个方式回一下试试');
+    } catch (e) {
+      if (e?.name === 'AbortError') return;  // 被新请求取消，安静退出
+      if (mySeq !== hintReqRef.current.seq) return;
+      console.error(e);
+      setHintsError('思路生成失败，请稍后重试');
+    } finally {
+      if (mySeq === hintReqRef.current.seq) {
+        setHintsLoading(false);
+        hintReqRef.current.controller = null;
+      }
+    }
+  }, [hintsLoading, currentCustomer, history, mood, tweaks.difficulty, PRODUCT, KP_INDEX]);
+
+  const toggleHints = useCallback(() => {
+    setShowHints(prev => {
+      const next = !prev;
+      if (next && hints.length === 0 && !hintsLoading) fetchHints();
+      return next;
+    });
+  }, [hints.length, hintsLoading, fetchHints]);
 
   // Compute missed KPs for a student turn — recommended minus actually cited,
   // only when answer wasn't 'good' so we don't nag on perfect answers.
@@ -223,22 +310,17 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   };
 
   const finishSession = (lastPick) => {
+    const latestPicks = picksRef.current;
+    const finalPicks = lastPick ? [...latestPicks, lastPick] : latestPicks;
     setFinished(true);
     setState(s => ({
       ...s,
       practiced: true,
       reportReady: true,
-      picks: lastPick && tweaks.path === 'manual' ? [...picks, lastPick] : (picks.length ? picks : []),
+      picks: finalPicks,
       finalMood: mood,
     }));
   };
-
-  // Commit picks to state on unmount / when finished flips
-  useEffect(() => {
-    if (finished) {
-      setState(s => ({ ...s, picks, finalMood: mood, practiced: true, reportReady: true }));
-    }
-  }, [finished]);
 
   // Mirror viewed-KP set into shared state so the report can show coverage.
   useEffect(() => {
@@ -304,7 +386,8 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
       {!finished ? (
         <BottomBar
           t={t} input={input} setInput={setInput} onSend={sendOpen}
-          showHints={showHints} setShowHints={setShowHints} hints={hintOptions}
+          showHints={showHints} toggleHints={toggleHints}
+          hints={hints} hintsLoading={hintsLoading} hintsError={hintsError} hintsMeta={hintsMeta}
           onPickHint={(opt) => {
             setInput(opt.text);
             setShowHints(false);
@@ -313,6 +396,7 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
           autoPath={tweaks.path}
           disabled={thinking || !started}
           started={started}
+          thinking={thinking}
         />
       ) : (
         <div style={{ padding: '12px 18px 22px' }}>
@@ -795,7 +879,8 @@ function KnowledgePopup({ t, kpId }) {
 }
 
 // ─── Bottom bar: hints + input ─────────────────────────────
-function BottomBar({ t, input, setInput, onSend, showHints, setShowHints, hints, onPickHint, onOpenLibrary, autoPath, disabled, started }) {
+function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, hintsLoading, hintsError, hintsMeta, onPickHint, onOpenLibrary, autoPath, disabled, started, thinking }) {
+  const hintBtnDisabled = !started || thinking;
   const inputRef = useRef(null);
   return (
     <div style={{ background: t.bg, borderTop: `1px solid ${t.line}` }}>
@@ -804,23 +889,79 @@ function BottomBar({ t, input, setInput, onSend, showHints, setShowHints, hints,
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <Icon name="spark" size={13} color={t.accent} stroke={2} />
-              <span style={{ fontSize: 11, color: t.accent, fontWeight: 700, letterSpacing: '0.06em' }}>回应思路提示</span>
+              <span style={{ fontSize: 11, color: t.accent, fontWeight: 700, letterSpacing: '0.06em' }}>
+                {hintsLoading ? 'AI 正在生成思路…' : '回应思路提示'}
+              </span>
             </div>
-            <span style={{ fontSize: 10, color: t.textMute }}>点击思路填入输入框</span>
+            <span style={{ fontSize: 10, color: t.textMute }}>
+              {hintsLoading ? '基于当前对话实时生成' : '点击思路填入输入框'}
+            </span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {hints.map(opt => (
-              <div key={opt.id} onClick={() => onPickHint(opt)} style={{
-                ...neuFlat(t, 14), padding: '10px 12px', cursor: 'pointer',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.04em' }}>{opt.label}</span>
-                  <span style={{ fontSize: 9.5, color: t.textMute }}>{opt.skill}</span>
+          {hintsLoading && hints.length === 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[0, 1, 2].map(i => (
+                <div key={i} style={{
+                  ...neuFlat(t, 14), padding: '10px 12px',
+                  opacity: 0.6,
+                }}>
+                  <div style={{ height: 10, width: '38%', background: t.line, borderRadius: 4, marginBottom: 8,
+                    animation: `hintShimmer 1.4s ${i * 0.15}s infinite ease-in-out` }} />
+                  <div style={{ height: 8, width: '92%', background: t.line, borderRadius: 4, marginBottom: 5,
+                    animation: `hintShimmer 1.4s ${i * 0.15 + 0.1}s infinite ease-in-out` }} />
+                  <div style={{ height: 8, width: '68%', background: t.line, borderRadius: 4,
+                    animation: `hintShimmer 1.4s ${i * 0.15 + 0.2}s infinite ease-in-out` }} />
                 </div>
-                <div style={{ fontSize: 12.5, color: t.textSoft, lineHeight: 1.5 }}>{opt.text}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+              <style>{`@keyframes hintShimmer{0%,100%{opacity:.35}50%{opacity:.85}}`}</style>
+            </div>
+          ) : hintsError ? (
+            <div style={{
+              ...neuFlat(t, 14), padding: '12px 14px',
+              fontSize: 12, color: t.textSoft, textAlign: 'center',
+            }}>
+              {hintsError}
+            </div>
+          ) : hints.length === 0 ? (
+            <div style={{
+              ...neuFlat(t, 14), padding: '12px 14px',
+              fontSize: 12, color: t.textMute, textAlign: 'center',
+            }}>
+              还没生成提示，点 ✦ 让 AI 想几个思路
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {hints.map(opt => (
+                <div key={opt.id} onClick={() => onPickHint(opt)} style={{
+                  ...neuFlat(t, 14), padding: '10px 12px', cursor: 'pointer',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: t.accent, letterSpacing: '0.04em' }}>{opt.label}</span>
+                    <span style={{ fontSize: 9.5, color: t.textMute }}>{opt.skill}</span>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: t.textSoft, lineHeight: 1.5 }}>{opt.text}</div>
+                  {opt.cites && opt.cites.length > 0 && hintsMeta && hintsMeta.length > 0 && (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {opt.cites.map(idx => {
+                        const ref = hintsMeta.find(m => m.index === idx);
+                        if (!ref) return null;
+                        return (
+                          <span key={idx} title={ref.snippet} style={{
+                            fontSize: 9.5, padding: '2px 7px', borderRadius: 999,
+                            background: `${t.accent}15`, color: t.accent, fontWeight: 600,
+                          }}>▸ {ref.doc_name?.slice(0, 24) || `资料 ${idx}`}</span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {hintsMeta && hintsMeta.length > 0 && (
+                <div style={{ fontSize: 10, color: t.textMute, textAlign: 'center', marginTop: 2 }}>
+                  AI 基于 {hintsMeta.length} 条知识库资料生成
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -841,9 +982,12 @@ function BottomBar({ t, input, setInput, onSend, showHints, setShowHints, hints,
           <Icon name="book" size={18} color={t.accent} stroke={1.8} />
         </button>
         <button
-          onClick={() => setShowHints(s => !s)}
+          onClick={toggleHints}
+          disabled={hintBtnDisabled}
           style={{
-            width: 42, height: 42, borderRadius: 999, border: 0, cursor: 'pointer', flexShrink: 0,
+            width: 42, height: 42, borderRadius: 999, border: 0,
+            cursor: hintBtnDisabled ? 'not-allowed' : 'pointer', flexShrink: 0,
+            opacity: hintBtnDisabled ? 0.5 : 1,
             background: showHints ? t.accent : t.surface,
             color: showHints ? '#fff' : t.accent,
             boxShadow: showHints

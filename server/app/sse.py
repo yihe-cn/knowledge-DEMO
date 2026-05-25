@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, AsyncIterator
+
+from .json_utils import all_json_spans
 
 JSON_START = "<<<JSON>>>"
 JSON_END = "<<<END>>>"
@@ -30,14 +31,14 @@ def split_text_and_json(full: str) -> tuple[str, dict | None]:
         except Exception:
             pass
 
-    # 回退：尝试把整段当 JSON 解析（模型没遵守标记时）
-    m = re.search(r"\{[\s\S]*\}", full)
-    if m:
-        try:
-            return full[: m.start()].rstrip(), json.loads(m.group(0))
-        except Exception:
-            return full, None
-    return full, None
+    # 回退：模型没遵守 <<<JSON>>> 标记时，扫所有 JSON 候选，取最后一个 dict（一般在正文后面）。
+    # 用真实 start 偏移拆正文，不要 rfind('{') —— 嵌套 JSON 会定位到内层 brace。
+    spans = all_json_spans(full)
+    last_dict_span = next((s for s in reversed(spans) if isinstance(s.obj, dict)), None)
+    if last_dict_span is None:
+        return full, None
+    head = full[: last_dict_span.start].rstrip()
+    return head, last_dict_span.obj
 
 
 async def stream_tokens_until_marker(astream: AsyncIterator) -> AsyncIterator[tuple[str, str]]:

@@ -45,7 +45,7 @@ function ReportScreen({ t, state, go }) {
   return (
     <div style={{ padding: '4px 18px 18px' }}>
       <TopBar t={t} title="评估报告" onBack={() => go('home')} right={
-        <div style={{ ...neuRaised(t, 999), width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+        <div onClick={() => go('practice')} title="重新演练" style={{ ...neuRaised(t, 999), width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           <Icon name="refresh" size={16} color={t.text} />
         </div>
       } />
@@ -143,11 +143,13 @@ function computeScore(picks) {
 }
 
 function buildGaps(picks, SCRIPT) {
-  // For each non-good pick, identify what kp should have been used
+  // For each non-good pick, identify what kp should have been used.
+  // Open-mode picks may exceed the scripted turns, so skip missing script entries.
   const gaps = [];
   picks.forEach((p, i) => {
     if (p.quality === 'good') return;
     const turn = SCRIPT[i];
+    if (!turn) return;
     const goodOpt = turn.options.find(o => o.quality === 'good');
     const shouldCite = goodOpt?.cites || [];
     if (shouldCite.length === 0 && p.quality !== 'bad') return;
@@ -414,19 +416,24 @@ function ReplayPanel({ t, picks }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {picks.map((p, i) => {
         const turn = SCRIPT[i];
-        const opt = turn.options.find(o => o.id === p.optionId);
         const qc = p.quality === 'good' ? t.good : p.quality === 'bad' ? t.bad : t.warn;
         const qLabel = p.quality === 'good' ? '正确' : p.quality === 'bad' ? '失误' : '可改进';
+        const responseText = p.studentText || '';
+        const customerLine = turn ? turn.customer : (p.customerLine || '');
         return (
           <Card key={i} t={t} style={{ padding: 14 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
               <span style={{ fontSize: 11, color: t.textMute, fontWeight: 600 }}>第 {i + 1} 轮 · {p.skill}</span>
               <span style={{ fontSize: 10, fontWeight: 700, color: qc, padding: '2px 8px', borderRadius: 999, background: `${qc}20` }}>{qLabel}</span>
             </div>
-            <div style={{ fontSize: 12, color: t.textSoft, marginBottom: 6, lineHeight: 1.5 }}>客户："{turn.customer}"</div>
+            {customerLine ? (
+              <div style={{ fontSize: 12, color: t.textSoft, marginBottom: 6, lineHeight: 1.5 }}>客户："{customerLine}"</div>
+            ) : null}
             <div style={{ ...neuInset(t, 12, 0.5), padding: '10px 12px', marginBottom: 8 }}>
               <div style={{ fontSize: 10, color: t.textMute, fontWeight: 600, marginBottom: 4 }}>你的回应</div>
-              <div style={{ fontSize: 12.5, color: t.text, lineHeight: 1.5 }}>{opt?.text}</div>
+              <div style={{ fontSize: 12.5, color: t.text, lineHeight: 1.5 }}>
+                {responseText || <span style={{ color: t.textMute, fontStyle: 'italic' }}>（未记录）</span>}
+              </div>
             </div>
             <div style={{ fontSize: 11.5, color: t.textSoft, lineHeight: 1.5, padding: '0 4px' }}>
               <b style={{ color: qc }}>教练点评：</b>{p.feedback}

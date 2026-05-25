@@ -168,11 +168,31 @@ function ModuleEntry({ t, kind, title, sub, progress, status, icon, lockHint, on
 }
 
 // ═══ LEARNING ═══════════════════════════════════════════════════════
-function LearningScreen({ t, state, setState, go, product }) {
+function LearningScreen({ t, state, setState, go, product, highlight }) {
   const KNOWLEDGE = product ? product.knowledge : window.SIMUGO_DATA.KNOWLEDGE;
   const productName = product ? product.meta.name : (window.SIMUGO_DATA.PRODUCT?.meta?.name || '');
   const totalKp = product ? product.meta.knowledgeTotal : KNOWLEDGE.reduce((a, m) => a + m.points.length, 0);
-  const [openMod, setOpenMod] = useState(KNOWLEDGE[0].id);
+  const hasKnowledge = Array.isArray(KNOWLEDGE) && KNOWLEDGE.length > 0;
+  const initialMod = useMemo(() => {
+    if (!hasKnowledge) return null;
+    if (!highlight) return KNOWLEDGE[0].id;
+    return KNOWLEDGE.find(m => m.points.some(p => p.id === highlight))?.id || KNOWLEDGE[0].id;
+  }, [KNOWLEDGE, highlight, hasKnowledge]);
+  const [openMod, setOpenMod] = useState(initialMod);
+  const highlightRef = useRef(null);
+
+  useEffect(() => {
+    if (!highlight) return;
+    setOpenMod(initialMod);
+  }, [highlight, initialMod]);
+
+  useEffect(() => {
+    if (!highlight || !highlightRef.current) return;
+    const timer = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [highlight, openMod]);
 
   const togglePoint = (pid) => {
     setState(s => {
@@ -181,6 +201,27 @@ function LearningScreen({ t, state, setState, go, product }) {
       return { ...s, learnedPoints: next };
     });
   };
+
+  if (!hasKnowledge) {
+    return (
+      <div style={{ padding: '4px 18px 18px' }}>
+        <TopBar t={t} title={`学习课程 · ${productName}`} onBack={() => go('home')} />
+        <div style={{
+          marginTop: 24,
+          padding: '32px 20px',
+          textAlign: 'center',
+          borderRadius: 18,
+          border: `1px dashed ${t.line}`,
+          color: t.textMute,
+          fontSize: 14,
+          lineHeight: 1.7,
+        }}>
+          该产品尚未配置知识点。<br />
+          请在管理后台为产品添加并审核 KP 后再回来。
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: '4px 18px 18px' }}>
@@ -219,8 +260,21 @@ function LearningScreen({ t, state, setState, go, product }) {
                 <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {mod.points.map(p => {
                     const learned = state.learnedPoints.has(p.id);
+                    const isHighlighted = highlight === p.id;
                     return (
-                      <div key={p.id} style={{ ...neuFlat(t, 16), padding: 14 }}>
+                      <div
+                        key={p.id}
+                        ref={isHighlighted ? highlightRef : null}
+                        style={{
+                          ...neuFlat(t, 16),
+                          padding: 14,
+                          outline: isHighlighted ? `2px solid ${t.accent}` : 'none',
+                          animation: isHighlighted ? 'kpHighlightPulse 1.8s ease 0.3s 2' : 'none',
+                        }}
+                      >
+                        {isHighlighted && (
+                          <style>{`@keyframes kpHighlightPulse{0%,100%{box-shadow:2px 2px 5px ${t.sDark},-2px -2px 5px ${t.sLight}}50%{box-shadow:0 0 0 3px ${t.accent}55,2px 2px 10px ${t.sDark}}}`}</style>
+                        )}
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{p.title}</div>

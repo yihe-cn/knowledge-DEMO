@@ -3,6 +3,27 @@
 // 不用 EventSource 是因为它不支持 POST body。
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const INTERNAL_TOKEN = import.meta.env.VITE_INTERNAL_TOKEN || '';
+
+/**
+ * 非流式 JSON POST。
+ * @param {{endpoint: string, body: any, signal?: AbortSignal}} opts
+ */
+export async function postJSON({ endpoint, body, signal }) {
+  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  if (INTERNAL_TOKEN) headers['X-Internal-Token'] = INTERNAL_TOKEN;
+  const resp = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body || {}),
+    signal,
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`HTTP ${resp.status} ${text}`);
+  }
+  return resp.json();
+}
 
 /**
  * @param {Object} opts
@@ -12,14 +33,19 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
  * @param {(data:any)=>void}    [opts.onResult]
  * @param {(err:Error)=>void}   [opts.onError]
  * @param {()=>void}            [opts.onDone]
+ * @param {(items:any[])=>void} [opts.onCitations]
+ * @param {(items:any[])=>void} [opts.onTaggedKps]
+ * @param {(data:any)=>void}    [opts.onFallback]
  * @param {AbortSignal}         [opts.signal]
  */
-export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, signal }) {
+export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, onCitations, onTaggedKps, onFallback, signal }) {
   let resp;
   try {
+    const headers = { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' };
+    if (INTERNAL_TOKEN) headers['X-Internal-Token'] = INTERNAL_TOKEN;
     resp = await fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      headers,
       body: JSON.stringify(body || {}),
       signal,
     });
@@ -59,6 +85,12 @@ export async function streamChat({ endpoint, body, onToken, onResult, onError, o
       if (text) onToken && onToken(text);
     } else if (event === 'result') {
       onResult && onResult(data);
+    } else if (event === 'citations') {
+      onCitations && onCitations((data && data.items) || []);
+    } else if (event === 'tagged_kps') {
+      onTaggedKps && onTaggedKps((data && data.items) || []);
+    } else if (event === 'fallback') {
+      onFallback && onFallback(data || {});
     } else if (event === 'error') {
       const msg = (data && data.message) || String(data) || 'unknown error';
       onError && onError(new Error(msg));

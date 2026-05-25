@@ -169,7 +169,8 @@ function KnowledgeLibrarySheet({ t, onClose, onOpenKp, viewedKp, citedKp }) {
     })).filter(m => m.points.length > 0);
   }, [query, filter, citedKp]);
 
-  const totalKp = useMemo(() => KNOWLEDGE.reduce((a, m) => a + m.points.length, 0), []);
+  const totalKp = ukMemo(() => KNOWLEDGE.reduce((a, m) => a + m.points.length, 0), [KNOWLEDGE]);
+  const coreCount = ukMemo(() => KNOWLEDGE.reduce((a, m) => a + m.points.filter(p => p.tier === 'core').length, 0), [KNOWLEDGE]);
   const citedCount = citedKp.size;
 
   return (
@@ -248,7 +249,7 @@ function KnowledgeLibrarySheet({ t, onClose, onOpenKp, viewedKp, citedKp }) {
           <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
             {[
               { id: 'all',   label: `全部 ${totalKp}` },
-              { id: 'core',  label: '重点 5' },
+              { id: 'core',  label: `重点 ${coreCount}` },
               { id: 'cited', label: `已引用 ${citedCount}` },
             ].map(f => (
               <div key={f.id} onClick={() => setFilter(f.id)} style={{
