@@ -164,8 +164,8 @@ function NotesScreen({ t, go }) {
           {[
             { v: 'all', label: '全部', n: counts.all },
             { v: 'starred', label: '⭐ 收藏', n: counts.starred },
-            { v: 'chat', label: '💬 答疑', n: counts.chat },
-            { v: 'quiz', label: '⚡ 突击', n: counts.quiz },
+            { v: 'chat', label: '💬 答疑·自动', n: counts.chat },
+            { v: 'quiz', label: '⚡ 突击·自动', n: counts.quiz },
           ].map(o => {
             const active = filter === o.v;
             return (

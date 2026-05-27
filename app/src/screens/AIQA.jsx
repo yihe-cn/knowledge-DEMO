@@ -320,6 +320,10 @@ function ChatMode({ t, contextKp, setContextKpId, showStageTiming }) {
           ragCitations: ragCites,
           taggedKps: finalTaggedKps,
           followups: (resultMeta?.followups || []).slice(0, 3),  // 通常为空，等 followups 事件
+          // revising 阶段已结束：保留首轮记录（resultMeta.verify.first_verdict 可看），
+          // 但本字段清空让 UI 收掉 banner
+          revising: null,
+          revised: !!(resultMeta?.verify && resultMeta.verify.revised),
         });
         setThinking(false);
         sendingRef.current = false;
@@ -341,6 +345,16 @@ function ChatMode({ t, contextKp, setContextKpId, showStageTiming }) {
       onAnswerMode: (mode) => {
         answerMode = mode || 'kb';
         patchLastAi({ answerMode: answerMode });
+      },
+      onRevising: (data) => {
+        // 后端检测到 core KP 漏覆，正在做第二轮 stream；清空当前文本和已发 token 缓存，
+        // 加 banner 展示"正在补充"；下一波 token 自然累积到清空后的 text 上。
+        streamed = '';
+        const missed = Array.isArray(data?.missed_kps) ? data.missed_kps : [];
+        patchLastAi({
+          text: '',
+          revising: { missed, reason: data?.reason || 'missed_core_kps' },
+        });
       },
       onStage: ({ node, duration_ms }) => {
         // experience_synthesizer 与 synthesizer 在 UI 上共用最后一格
@@ -431,6 +445,24 @@ function ChatMode({ t, contextKp, setContextKpId, showStageTiming }) {
         </div>
       )}
 
+      {/* 对话工具行：参与布局，避免覆盖首条消息 */}
+      {messages.length > 0 && (
+        <div style={{
+          padding: contextKp ? '0 18px 8px' : '0 18px 10px',
+          display: 'flex', justifyContent: 'flex-end', flexShrink: 0,
+        }}>
+          <button type="button" onClick={resetChat} style={{
+            appearance: 'none', border: 0, fontFamily: 'inherit',
+            ...neuRaised(t, 999), padding: '6px 11px', cursor: 'pointer',
+            fontSize: 11, color: t.textSoft, fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}>
+            <Icon name="refresh" size={11} color={t.textSoft} stroke={2} />
+            新对话
+          </button>
+        </div>
+      )}
+
       {/* 主区域：空态 or 对话 */}
       <div ref={scrollRef} style={{
         flex: 1, overflowY: 'auto', padding: '4px 18px 12px',
@@ -464,19 +496,6 @@ function ChatMode({ t, contextKp, setContextKpId, showStageTiming }) {
 
       {/* 输入栏 */}
       <Composer t={t} value={input} onChange={setInput} onSend={() => send(input)} disabled={thinking} />
-
-      {/* 浮动"新对话"按钮 */}
-      {messages.length > 0 && (
-        <div onClick={resetChat} style={{
-          position: 'absolute', top: 6, right: 18, zIndex: 5,
-          ...neuRaised(t, 999), padding: '6px 11px', cursor: 'pointer',
-          fontSize: 11, color: t.textSoft, fontWeight: 600,
-          display: 'flex', alignItems: 'center', gap: 5,
-        }}>
-          <Icon name="refresh" size={11} color={t.textSoft} stroke={2} />
-          新对话
-        </div>
-      )}
 
       {/* KP 详情弹层 */}
       {openKpId && <KpDetailSheet t={t} kpId={openKpId} onClose={() => setOpenKpId(null)} />}
@@ -700,6 +719,20 @@ function Bubble({ t, msg, onCiteClick, onFollowup, starred, onToggleStar }) {
         }}
           onClick={() => activeCite !== null && setActiveCite(null)}
         >
+          {msg.revising && (
+            <div style={{
+              marginBottom: 10, padding: '8px 10px', borderRadius: 10,
+              background: t.surface2,
+              boxShadow: `inset 2px 2px 4px ${t.sDark}, inset -2px -2px 4px ${t.sLight}`,
+              fontSize: 12, color: t.textSoft, lineHeight: 1.55,
+              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontWeight: 700, color: t.accent }}>正在补充</span>
+              <span>检测到漏点{(msg.revising.missed && msg.revising.missed.length)
+                ? '：' + msg.revising.missed.map(k => k.name).filter(Boolean).join('、')
+                : ''}，重新组织答案…</span>
+            </div>
+          )}
           {(() => {
             const citeMap = {};
             (msg.ragCitations || []).forEach(c => { citeMap[c.index] = c; });
@@ -765,13 +798,11 @@ function Bubble({ t, msg, onCiteClick, onFollowup, starred, onToggleStar }) {
                 display: 'inline-flex', alignItems: 'center', gap: 5,
                 padding: '5px 10px', borderRadius: 999, cursor: 'pointer',
                 background: starred ? `${t.warn}1f` : 'transparent',
-                border: starred ? `1px solid ${t.warn}55` : `1px solid ${t.line}`,
+                border: starred ? `1px solid ${t.warn}55` : `1px solid ${t.line}99`,
                 fontSize: 11, fontWeight: 600,
-                color: starred ? t.warn : t.textMute,
+                color: starred ? t.warn : t.textSoft,
                 transition: 'all .15s ease',
               }}
-              onMouseEnter={e => { if (!starred) { e.currentTarget.style.borderColor = `${t.warn}66`; e.currentTarget.style.color = t.warn; } }}
-              onMouseLeave={e => { if (!starred) { e.currentTarget.style.borderColor = t.line; e.currentTarget.style.color = t.textMute; } }}
             >
               <span style={{ fontSize: 12, lineHeight: 1 }}>{starred ? '⭐' : '☆'}</span>
               <span>{starred ? '已收藏' : '收藏到笔记'}</span>
@@ -811,8 +842,10 @@ function Bubble({ t, msg, onCiteClick, onFollowup, starred, onToggleStar }) {
                 padding: '2px 8px', borderRadius: 999,
                 background: t.surface, border: `1px solid ${t.line}`,
                 fontSize: 10, color: t.textMute, fontWeight: 700,
-              }} title="rerank 模型给出的相关度评分（>50% 通常强相关；20-50% 边缘；<20% 几乎无关）">
-                相关度 {msg.closestMatch.score_percent}%
+              }} title={msg.closestMatch.score_source === 'cosine'
+                ? '基于向量余弦相似度的匹配分（rerank 模型未参与本次评分）'
+                : 'rerank 模型给出的匹配分（满分 100；>50 通常强相关；20-50 边缘；<20 几乎无关）'}>
+                匹配分 {msg.closestMatch.score_percent}/100
               </span>
             </div>
             <div

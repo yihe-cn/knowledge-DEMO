@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "admin", "run", "dev"],
       "port": 5174
+    },
+    {
+      "name": "simugo-server",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--directory", "server", "uvicorn", "app.main:app", "--port", "8000"],
+      "port": 8000
     }
   ]
 }

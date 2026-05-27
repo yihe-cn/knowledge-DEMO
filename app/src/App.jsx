@@ -4,13 +4,24 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTheme } from './theme.js';
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakButton } from './components/TweaksPanel.jsx';
-import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, setActiveProduct, loadRemoteProducts, ensureProductLoaded } from './productCatalog.js';
+import {
+  ACCOUNTS,
+  ACCOUNT_INDEX,
+  PRODUCTS,
+  getAccount,
+  registerLearnerAccount,
+  setActiveProduct,
+  loadRemoteProducts,
+  ensureProductLoaded,
+  getVisibleProductIds,
+} from './productCatalog.js';
 import { AccountHome } from './screens/AccountHome.jsx';
 import { HomeScreen, LearningScreen } from './screens/HomeLearn.jsx';
 import { PracticeScreen } from './screens/Practice.jsx';
 import { ReportScreen } from './screens/Report.jsx';
 import { AIQAScreen } from './screens/AIQA.jsx';
 import { NotesScreen } from './screens/Notes.jsx';
+import { AssessmentScreen } from './screens/Assessment.jsx';
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "cream",
@@ -66,25 +77,40 @@ function saveProgressToSession(byProduct) {
 
 // 深链支持（S1）：?account=xx&product=yy 直达 HomeLearn，
 // 同时切换账号/课程时把当前状态回写到 URL，便于销售保存"演示开场链接"。
+const DEEP_LINK_ROUTES = new Set(['home', 'learn', 'practice', 'aiqa', 'notes']);
+const URL_ROUTE_STATES = new Set(['learn', 'practice', 'aiqa', 'notes']);
+
 function readUrlParams() {
-  if (typeof window === 'undefined') return { account: null, product: null };
+  if (typeof window === 'undefined') return { account: null, product: null, route: null };
   const sp = new URLSearchParams(window.location.search);
+  const route = sp.get('route');
   return {
     account: sp.get('account'),
     product: sp.get('product'),
+    route: DEEP_LINK_ROUTES.has(route) ? route : null,
   };
 }
-function writeUrlParams({ account, product }) {
+function writeUrlParams({ account, product, route = null }) {
   if (typeof window === 'undefined') return;
   const sp = new URLSearchParams(window.location.search);
   if (account) sp.set('account', account); else sp.delete('account');
   if (product) sp.set('product', product); else sp.delete('product');
+  if (route && URL_ROUTE_STATES.has(route)) sp.set('route', route); else sp.delete('route');
   const qs = sp.toString();
   const newUrl = `${window.location.pathname}${qs ? '?' + qs : ''}${window.location.hash}`;
   window.history.replaceState(null, '', newUrl);
 }
 
-function App() {
+// 考核分支：URL 带 ?token=xxx 直接进考核屏，跳过账号/课程主流程。
+// 在 App 外面做分流，保持主 App 内部的 hooks 顺序稳定。
+function AppRoot() {
+  const hasAssessmentToken = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).has('token');
+  if (hasAssessmentToken) return <AssessmentScreen />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const t = useTheme(tweaks.theme);
 
@@ -92,9 +118,10 @@ function App() {
   // product 参数不在此校验合法性——switchProduct 会走 ensureProductLoaded，
   // 不存在/加载失败时本身已有兜底（alert + 留在 accounts），同时允许远端动态产品
   const initial = useMemo(() => {
-    const { account, product } = readUrlParams();
-    const accountId = (account && ACCOUNT_INDEX[account]) ? account : ACCOUNTS[0].id;
-    return { accountId, productId: product || null };
+    const { account, product, route } = readUrlParams();
+    if (account && !ACCOUNT_INDEX[account]) registerLearnerAccount(account);
+    const accountId = account || ACCOUNTS[0].id;
+    return { accountId, productId: product || null, route: route || 'home' };
   }, []);
 
   const [accountId, setAccountId] = useState(initial.accountId);
@@ -107,18 +134,27 @@ function App() {
   // 任意 progress 变化都同步回 sessionStorage
   useEffect(() => { saveProgressToSession(progressByProduct); }, [progressByProduct]);
 
-  // 远端产品列表（admin 创建的产品）加载完后触发一次 re-render
+  // 远端课程列表按账号分发加载；加载完成后触发 AccountHome 重新渲染
   const [remoteLoaded, setRemoteLoaded] = useState(0);
+  const initialProductRef = useRef(initial.productId);
+  const initialRouteRef = useRef(initial.route);
   useEffect(() => {
-    loadRemoteProducts().then(ids => {
-      if (ids.length) setRemoteLoaded(n => n + 1);
+    loadRemoteProducts(accountId).then(() => {
+      setRemoteLoaded(n => n + 1);
+      const pid = initialProductRef.current;
+      const route = initialRouteRef.current;
+      initialProductRef.current = null;
+      initialRouteRef.current = null;
+      if (pid) switchProduct(pid, { route });
     });
-  }, []);
+  }, []); // 首次账号来自 URL 初始化值，后续账号切换在 switchAccount 内刷新
 
   // 路由附带参数
   const [highlight, setHighlight] = useState(null);
   const [aiqaContextKp, setAiqaContextKp] = useState(null);
   const [aiqaInitialMode, setAiqaInitialMode] = useState('chat');
+  // route='assessment' 时携带的 token；从 AccountHome / HomeScreen 进入时由 go() 注入
+  const [examToken, setExamToken] = useState(null);
 
   // 当前产品的 progress（如果还没有就给空）
   const currentProgress = productId ? (progressByProduct[productId] || emptyProgress()) : emptyProgress();
@@ -140,7 +176,15 @@ function App() {
       setAiqaContextKp(opts.kpId || null);
       setAiqaInitialMode(opts.mode || 'chat');
     }
-  }, []);
+    if (r === 'assessment') {
+      setExamToken(opts.token || null);
+    }
+    writeUrlParams({
+      account: accountId,
+      product: productId,
+      route: URL_ROUTE_STATES.has(r) ? r : null,
+    });
+  }, [accountId, productId]);
 
   // 切换账号：回到该账号的 accounts 页，清空产品上下文
   const switchAccount = useCallback((aid) => {
@@ -148,13 +192,22 @@ function App() {
     setProductId(null);
     setRoute('accounts');
     writeUrlParams({ account: aid, product: null });
+    loadRemoteProducts(aid).then(() => setRemoteLoaded(n => n + 1));
   }, []);
 
   // 切换产品：异步加载（远端产品首次进入会拉详情），再注入 window.SIMUGO_DATA
   // 用 ref 跟踪最新一次请求，避免快速连点时先发起的请求后返回覆盖新选择
   const switchSeqRef = useRef(0);
-  const switchProduct = useCallback(async (pid) => {
+  const switchProduct = useCallback(async (pid, opts = {}) => {
     if (!PRODUCTS[pid]) return;
+    const visibleIds = getVisibleProductIds(getAccount(accountId));
+    if (!visibleIds.includes(pid)) {
+      alert('该课程尚未分发给当前学员，或课程访问已被停止。');
+      setProductId(null);
+      setRoute('accounts');
+      writeUrlParams({ account: accountId, product: null });
+      return;
+    }
     const seq = ++switchSeqRef.current;
     try {
       await ensureProductLoaded(pid);
@@ -168,10 +221,15 @@ function App() {
     if (seq !== switchSeqRef.current) return; // 已被更晚的请求取代
     await setActiveProduct(pid);
     if (seq !== switchSeqRef.current) return;
+    const nextRoute = DEEP_LINK_ROUTES.has(opts.route) ? opts.route : 'home';
     setProductId(pid);
-    setRoute('home');
+    setRoute(nextRoute);
     setProgressByProduct(prev => prev[pid] ? prev : { ...prev, [pid]: emptyProgress() });
-    writeUrlParams({ account: accountId, product: pid });
+    writeUrlParams({
+      account: accountId,
+      product: pid,
+      route: URL_ROUTE_STATES.has(nextRoute) ? nextRoute : null,
+    });
   }, [accountId]);
 
   // 返回到账号首页（清空产品上下文）
@@ -181,17 +239,8 @@ function App() {
     writeUrlParams({ account: accountId, product: null });
   }, [accountId]);
 
-  // 启动时若 URL 带了合法的 product，自动激活并跳到 home
-  const initialProductRef = useRef(initial.productId);
-  useEffect(() => {
-    const pid = initialProductRef.current;
-    if (pid) switchProduct(pid);
-    // 仅在挂载时跑一次；switchProduct 依赖 accountId（来自 URL 已就位）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // 当前账号 & 产品
-  const account = ACCOUNT_INDEX[accountId];
+  const account = getAccount(accountId);
   const product = productId ? PRODUCTS[productId] : null;
 
   // Keep the page mounted when practice commits picks into product progress.
@@ -206,6 +255,7 @@ function App() {
         background: t.bg, color: t.text,
         display: 'flex', flexDirection: 'column',
         fontFamily: 'inherit', overflow: 'hidden',
+        paddingTop: 'env(safe-area-inset-top)',
       }}>
         <div key={pageKey} style={{
           flex: 1, overflowY: route === 'practice' ? 'hidden' : 'auto',
@@ -219,17 +269,25 @@ function App() {
               switchAccount={switchAccount}
               switchProduct={switchProduct}
               progressByProduct={progressByProduct}
+              go={go}
             />
           )}
-          {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} switchProduct={switchProduct} />}
-          {route === 'learn'    && product && <LearningScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} highlight={highlight} product={product} />}
+          {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} setState={setCurrentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} switchProduct={switchProduct} />}
+          {route === 'learn'    && product && <LearningScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} highlight={highlight} product={product} account={account} />}
           {route === 'practice' && product && <PracticeScreen t={t} state={currentProgress} setState={setCurrentProgress} go={go} tweaks={tweaks} />}
           {route === 'report'   && product && <ReportScreen   t={t} state={currentProgress} go={go} />}
           {route === 'aiqa'     && product && <AIQAScreen     t={t} go={go} contextKpId={aiqaContextKp} setContextKpId={setAiqaContextKp} initialMode={aiqaInitialMode} tweaks={tweaks} />}
           {route === 'notes'    && product && <NotesScreen    t={t} go={go} />}
+          {route === 'assessment' && examToken && (
+            <AssessmentScreen
+              t={t}
+              token={examToken}
+              onBack={() => { setExamToken(null); go(productId ? 'home' : 'accounts'); }}
+            />
+          )}
 
-          {/* S10：全局浮动私教入口——除 practice/aiqa/accounts 外都显示 */}
-          {product && !['practice', 'aiqa', 'accounts'].includes(route) && (
+          {/* 浮动私教入口：learn 用内联按钮，home 有 AIAssistantBanner，两者均不再叠加浮动按钮 */}
+          {product && !['practice', 'aiqa', 'accounts', 'assessment', 'learn', 'home'].includes(route) && (
             <FloatingTutor t={t} onClick={() => go('aiqa')} />
           )}
         </div>
@@ -274,30 +332,32 @@ function App() {
 }
 
 
-// S10：右下角常驻私教按钮。位置 fixed，避开底部 BottomCTA 时的滚动条；
-// 仅在 home/learn/report/notes 显示——practice 是沉浸态，aiqa 自己就是目的地。
+// report/notes 屏的常驻私教入口：纯图标辨识度低，改为带文字的 pill 提升视觉引导。
+// learn 屏改用内联锚定按钮；home 屏已有 AIAssistantBanner，两者均不再叠加此浮动按钮。
 function FloatingTutor({ t, onClick }) {
   return (
     <div
       onClick={onClick}
       style={{
-        position: 'absolute', right: 18, bottom: 22, zIndex: 30,
-        width: 56, height: 56, borderRadius: 999,
+        position: 'absolute', right: 18, bottom: 88, zIndex: 30,
+        display: 'inline-flex', alignItems: 'center', gap: 8,
+        padding: '11px 16px 11px 12px',
+        borderRadius: 999,
         background: `linear-gradient(135deg, ${t.accent}, ${t.accentSoft})`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
         cursor: 'pointer',
-        boxShadow: `5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55`,
+        boxShadow: `4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55`,
         animation: 'simugoTutorPulse 2.4s ease-in-out infinite',
       }}
       title="问 AI 私教"
     >
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
       </svg>
+      <span style={{ fontSize: 13, fontWeight: 700, color: '#fff', letterSpacing: '0.01em' }}>问 AI 私教</span>
       <style>{`
         @keyframes simugoTutorPulse {
-          0%, 100% { box-shadow: 5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55; }
-          50%      { box-shadow: 5px 5px 14px ${t.sDark}, -4px -4px 10px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 10px ${t.accent}00; }
+          0%, 100% { box-shadow: 4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 0 ${t.accent}55; }
+          50%      { box-shadow: 4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 10px ${t.accent}00; }
         }
       `}</style>
     </div>
@@ -315,4 +375,4 @@ function GlobalStyle({ t }) {
   `}</style>;
 }
 
-export default App;
+export default AppRoot;

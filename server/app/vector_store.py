@@ -1,9 +1,14 @@
-"""Milvus Lite 集合封装。仅用于 `kb_chunks` 一个集合。
+"""Milvus Lite 集合封装。包含两个并列 collection：
 
-字段：
+`kb_chunks` — 文档切片向量
 - chunk_id (INT64, primary)：与 SQL kb_chunk.id 一一对应
 - doc_id (INT64)
 - kp_ids (ARRAY<INT64>)：先空，KP 抽取/审批后回写
+- vector (FLOAT_VECTOR, dim=settings.milvus_dim)
+
+`kp_embeddings` — KP 自身向量（提升 query → KP 的语义召回）
+- kp_id (INT64, primary)：与 SQL kp_registry.id 一一对应
+- status (INT8)：1=approved, 0=draft/archived；过滤用
 - vector (FLOAT_VECTOR, dim=settings.milvus_dim)
 
 注意（Demo 用 Milvus Lite）：
@@ -57,10 +62,37 @@ def _ensure_collection(client: MilvusClient) -> None:
         _loaded.add(name)
 
 
+def _ensure_kp_collection(client: MilvusClient) -> None:
+    name = settings.milvus_kp_collection
+    if not client.has_collection(name):
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("kp_id", DataType.INT64, is_primary=True)
+        schema.add_field("status", DataType.INT8)
+        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=settings.milvus_dim)
+
+        index_params = client.prepare_index_params()
+        index_params.add_index(
+            field_name="vector", index_type="FLAT", metric_type="COSINE"
+        )
+
+        client.create_collection(
+            collection_name=name, schema=schema, index_params=index_params
+        )
+
+    if name not in _loaded:
+        client.load_collection(name)
+        _loaded.add(name)
+
+
 def _reload_collection() -> None:
     """search/query 报 'released' 时强制重新 load 一次。"""
     _loaded.discard(settings.milvus_collection)
     _ensure_collection(_client())
+
+
+def _reload_kp_collection() -> None:
+    _loaded.discard(settings.milvus_kp_collection)
+    _ensure_kp_collection(_client())
 
 
 def get_collection_name() -> str:
@@ -223,3 +255,59 @@ def update_kp_ids(chunk_id: int, kp_ids: list[int]) -> None:
             }
         ],
     )
+
+
+# ── KP 向量集合（与 kb_chunks 并列）────────────────────────────────────
+def upsert_kp_embedding(kp_id: int, status: int, vector: list[float]) -> None:
+    """单个 KP 行 upsert。status: 1=approved, 0=其他。"""
+    client = _client()
+    _ensure_kp_collection(client)
+    client.upsert(
+        collection_name=settings.milvus_kp_collection,
+        data=[{"kp_id": int(kp_id), "status": int(status), "vector": vector}],
+    )
+
+
+def delete_kp_embedding(kp_id: int) -> None:
+    client = _client()
+    _ensure_kp_collection(client)
+    client.delete(
+        collection_name=settings.milvus_kp_collection,
+        filter=f"kp_id == {int(kp_id)}",
+    )
+
+
+def search_kps(
+    query_vector: list[float],
+    top_k: int = 10,
+    approved_only: bool = True,
+) -> list[dict]:
+    """根据 query 检索 KP 自身。返回 [{kp_id, score}]，score 是相似度（越大越相关）。"""
+    client = _client()
+    _ensure_kp_collection(client)
+
+    def _do():
+        return client.search(
+            collection_name=settings.milvus_kp_collection,
+            data=[query_vector],
+            anns_field="vector",
+            search_params={"metric_type": "COSINE", "params": {}},
+            limit=top_k,
+            filter="status == 1" if approved_only else "",
+            output_fields=["kp_id", "status"],
+        )
+
+    try:
+        res = _do()
+    except Exception as e:
+        if "released" in str(e).lower():
+            _reload_kp_collection()
+            res = _do()
+        else:
+            raise
+
+    out: list[dict] = []
+    for hit in res[0]:
+        dist = float(hit.distance)
+        out.append({"kp_id": int(hit["kp_id"]), "score": 1.0 - dist})
+    return out

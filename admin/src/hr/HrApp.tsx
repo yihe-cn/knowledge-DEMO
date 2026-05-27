@@ -2,20 +2,32 @@ import { useEffect, useState } from 'react';
 import { Route, Routes, useLocation } from 'react-router-dom';
 import './styles.css';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
-import Overview from './pages/Overview';
-import Library from './pages/Library';
-import ItemDetail from './pages/ItemDetail';
-import Review from './pages/Review';
+import Dashboard from '../pages/Dashboard';
+import KpRegistry from '../pages/KpRegistry';
+import KpDetail from '../pages/KpDetail';
+import KbDocuments from '../pages/KbDocuments';
+import KpReview from '../pages/KpReview';
 import Insights from './pages/Insights';
-import Docs from './pages/Docs';
 import Audit from './pages/Audit';
 import { TaxonomyPage, DeptsPage, ConfigPage } from './pages/Placeholder';
+import Assessments from '../pages/Assessments';
+import AssessmentEditor from '../pages/AssessmentEditor';
+import Assignments from '../pages/Assignments';
+import AssessmentStats from '../pages/AssessmentStats';
+import Courses from '../pages/Courses';
 import { useOverview, useDocs } from './api';
 
 function routeFromPath(p: string): string {
   if (p === '/hr' || p === '/hr/') return 'overview';
-  const seg = p.replace(/^\/hr\//, '').split('/')[0];
-  if (seg === 'items') return 'item';
+  const parts = p.replace(/^\/hr\/?/, '').split('/');
+  const seg = parts[0];
+  if (seg === 'items') return 'library';
+  if (seg === 'assessments') {
+    if (parts[1] === 'assignments') return 'assignments';
+    if (parts[1] === 'stats') return 'stats';
+    return 'assessments';
+  }
+  if (seg === 'products') return 'courses';
   return seg || 'overview';
 }
 
@@ -59,16 +71,23 @@ export default function HrApp() {
         />
         <main className="main">
           <Routes>
-            <Route index            element={<Overview />} />
-            <Route path="library"   element={<Library />} />
-            <Route path="items/:id" element={<ItemDetail />} />
-            <Route path="review"    element={<Review />} />
-            <Route path="insights"  element={<Insights />} />
-            <Route path="docs"      element={<Docs />} />
-            <Route path="taxonomy"  element={<TaxonomyPage />} />
-            <Route path="audit"     element={<Audit />} />
-            <Route path="depts"     element={<DeptsPage />} />
-            <Route path="config"    element={<ConfigPage />} />
+            <Route index                              element={<Dashboard />} />
+            <Route path="library"                     element={<KpRegistry />} />
+            <Route path="items/:id"                   element={<KpDetail />} />
+            <Route path="docs"                        element={<KbDocuments />} />
+            <Route path="taxonomy"                    element={<TaxonomyPage />} />
+            <Route path="review"                      element={<KpReview />} />
+            <Route path="insights"                    element={<Insights />} />
+            <Route path="audit"                       element={<Audit />} />
+            <Route path="assessments"                 element={<Assessments />} />
+            <Route path="assessments/assignments"     element={<Assignments />} />
+            <Route path="assessments/stats"           element={<AssessmentStats />} />
+            <Route path="assessments/:id/edit"        element={<AssessmentEditor />} />
+            <Route path="courses"                     element={<Courses />} />
+            <Route path="courses/:id"                 element={<Courses />} />
+            <Route path="products"                    element={<Courses />} />
+            <Route path="depts"                       element={<DeptsPage />} />
+            <Route path="config"                      element={<ConfigPage />} />
           </Routes>
         </main>
       </div>

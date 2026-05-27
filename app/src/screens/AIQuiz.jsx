@@ -257,7 +257,14 @@ function QuizIntro({ t, contextKp, onStart, count, setContextKpId, customer, cus
   // 头像配色
   const avatarStyle = customerAvatarStyle(t, customer);
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '8px 18px 20px', display: 'flex', flexDirection: 'column' }}>
+    <div style={{
+      flex: 1,
+      minHeight: 0,
+      overflowY: 'auto',
+      padding: '8px 18px calc(20px + env(safe-area-inset-bottom))',
+      display: 'flex',
+      flexDirection: 'column',
+    }}>
       {/* 上下文芯片（可清除） */}
       {contextKp && (
         <div style={{ marginBottom: 14 }}>
@@ -269,6 +276,7 @@ function QuizIntro({ t, contextKp, onStart, count, setContextKpId, customer, cus
         ...neuRaised(t, 22, 1.1), padding: '20px 18px',
         background: `linear-gradient(135deg, ${t.surface} 0%, ${t.surface2} 100%)`,
         position: 'relative', overflow: 'hidden', marginBottom: 14,
+        flexShrink: 0,
       }}>
         <div style={{
           position: 'absolute', right: -30, top: -30, width: 140, height: 140,
@@ -314,7 +322,7 @@ function QuizIntro({ t, contextKp, onStart, count, setContextKpId, customer, cus
       {/* 切换人设 */}
       <CustomerSwitcher t={t} customers={customers} currentId={customer.id} onPick={onPickCustomer} />
 
-      <div style={{ ...neuInset(t, 16, 0.6), padding: '14px 16px', margin: '14px 0 16px' }}>
+      <div style={{ ...neuInset(t, 16, 0.6), padding: '14px 16px', margin: '14px 0 16px', flexShrink: 0 }}>
         <div style={{ fontSize: 11, color: t.textMute, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8 }}>规则</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
@@ -332,7 +340,7 @@ function QuizIntro({ t, contextKp, onStart, count, setContextKpId, customer, cus
 
       <div style={{ flex: 1 }} />
 
-      <PillButton t={t} primary onClick={onStart} style={{ width: '100%', padding: '16px', fontSize: 15 }}>
+      <PillButton t={t} primary onClick={onStart} style={{ width: '100%', padding: '16px', fontSize: 15, flexShrink: 0 }}>
         <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <Icon name="bolt" size={16} color="#fff" stroke={2.2} />
           让 {customer.name} 开始突击 · {count} 题
@@ -345,7 +353,7 @@ function QuizIntro({ t, contextKp, onStart, count, setContextKpId, customer, cus
 // ─── 客户切换器（三张迷你卡） ──
 function CustomerSwitcher({ t, customers, currentId, onPick }) {
   return (
-    <div>
+    <div style={{ flexShrink: 0 }}>
       <div style={{ fontSize: 11, color: t.textMute, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8, paddingLeft: 4 }}>
         换个客户练
       </div>

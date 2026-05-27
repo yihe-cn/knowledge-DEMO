@@ -9,19 +9,24 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import (
-    KpProductLink,
+    CourseAssignment,
+    CourseAssignmentStatus,
+    KpCardContent,
     KpRegistry,
     KpStatus,
+    Learner,
     PracticeRole,
     Product,
+    ProductKp,
     ProductStatus,
     get_session,
 )
+from ..routes.kp import _card_to_out
 
 router = APIRouter()
 
@@ -37,10 +42,11 @@ _DEFAULT_ICON = "🧭"
 _DEFAULT_COLOR = "cyan"
 
 
-def _meta_from_product(p: Product, kp_total: int) -> dict[str, Any]:
+def _meta_from_product(p: Product, kp_total: int, base_url: str = "") -> dict[str, Any]:
     industry = p.industry or ""
     fallback = _INDUSTRY_FALLBACK.get(industry, {})
     short = p.name[:6] if len(p.name) > 6 else p.name
+    cover_url = p.cover_image_url  # type: ignore[attr-defined]
     return {
         "name": p.name,
         "shortName": short,
@@ -59,6 +65,19 @@ def _meta_from_product(p: Product, kp_total: int) -> dict[str, Any]:
         "knowledgeTotal": kp_total,
         # 前端用此判断「该 product 来自后端，未在 PRODUCTS 静态注册」
         "fromBackend": True,
+        # 后端数字 id，前端用它去拉 /api/products/{id}/kps 富字段
+        "backendId": p.id,
+        # 封面图完整 URL；为 None 时前端降级为 CSS 渐变封面
+        "coverImage": f"{base_url}{cover_url}" if cover_url else None,
+    }
+
+
+def _learner_to_public(l: Learner) -> dict[str, Any]:
+    return {
+        "id": l.id,
+        "name": l.name,
+        "dept": l.dept or "",
+        "external_ref": l.external_ref or "",
     }
 
 
@@ -200,18 +219,20 @@ async def _fetch_product_roles(
 
 
 async def _fetch_product_kps(session: AsyncSession, product_id: int) -> list[KpRegistry]:
+    """从 ProductKp 课程编排（active）取 approved KP，与 swipe 学习屏数据源一致。"""
     stmt = (
         select(KpRegistry)
-        .join(KpProductLink, KpProductLink.kp_id == KpRegistry.id)
-        .where(KpProductLink.product_id == product_id)
+        .join(ProductKp, ProductKp.kp_id == KpRegistry.id)
+        .where(ProductKp.product_id == product_id)
+        .where(ProductKp.removed_at.is_(None))
         .where(KpRegistry.status == KpStatus.approved)
-        .order_by(KpRegistry.id)
+        .order_by(ProductKp.order_index, ProductKp.id)
     )
     return list((await session.execute(stmt)).scalars().all())
 
 
 @router.get("/courses")
-async def list_courses(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def list_courses(request: Request, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """列出所有 active 产品，返回前端 PRODUCTS 形状的轻量元数据。"""
     products = (
         await session.execute(
@@ -224,14 +245,15 @@ async def list_courses(session: AsyncSession = Depends(get_session)) -> dict[str
     if not products:
         return {"items": []}
 
-    # 批量统计 approved KP 数量
+    # 批量统计 ProductKp 课程编排里的 approved KP 数量（与学员侧 swipe 学习一致）
     counts_rows = (
         await session.execute(
             select(
-                KpProductLink.product_id,
+                ProductKp.product_id,
                 KpRegistry.id,
             )
-            .join(KpRegistry, KpRegistry.id == KpProductLink.kp_id)
+            .join(KpRegistry, KpRegistry.id == ProductKp.kp_id)
+            .where(ProductKp.removed_at.is_(None))
             .where(KpRegistry.status == KpStatus.approved)
         )
     ).all()
@@ -239,19 +261,97 @@ async def list_courses(session: AsyncSession = Depends(get_session)) -> dict[str
     for pid, _ in counts_rows:
         counts[pid] = counts.get(pid, 0) + 1
 
+    base_url = str(request.base_url).rstrip("/")
     items = [
         {
             "id": p.code,
-            "meta": _meta_from_product(p, counts.get(p.id, 0)),
+            "meta": _meta_from_product(p, counts.get(p.id, 0), base_url=base_url),
         }
         for p in products
     ]
     return {"items": items}
 
 
+@router.get("/courses/by-account/{account_ref}")
+async def list_courses_by_account(
+    account_ref: str, request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """按学员账号返回已分发的 active 后端课程。
+
+    Demo 阶段 account_ref 对应 learner.external_ref；生产可替换为 SSO identity。
+    """
+    learner = (
+        await session.execute(select(Learner).where(Learner.external_ref == account_ref))
+    ).scalar_one_or_none()
+    if not learner:
+        return {"learner": None, "items": []}
+
+    rows = (
+        await session.execute(
+            select(Product)
+            .join(CourseAssignment, CourseAssignment.product_id == Product.id)
+            .where(CourseAssignment.learner_id == learner.id)
+            .where(CourseAssignment.status == CourseAssignmentStatus.active)
+            .where(Product.status == ProductStatus.active)
+            .order_by(Product.id)
+        )
+    ).scalars().all()
+
+    if not rows:
+        return {"learner": _learner_to_public(learner), "items": []}
+
+    product_ids = [p.id for p in rows]
+    counts_rows = (
+        await session.execute(
+            select(
+                ProductKp.product_id,
+                KpRegistry.id,
+            )
+            .join(KpRegistry, KpRegistry.id == ProductKp.kp_id)
+            .where(ProductKp.product_id.in_(product_ids))
+            .where(ProductKp.removed_at.is_(None))
+            .where(KpRegistry.status == KpStatus.approved)
+        )
+    ).all()
+    counts: dict[int, int] = {}
+    for pid, _ in counts_rows:
+        counts[pid] = counts.get(pid, 0) + 1
+
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "learner": _learner_to_public(learner),
+        "items": [
+            {
+                "id": p.code,
+                "meta": _meta_from_product(p, counts.get(p.id, 0), base_url=base_url),
+            }
+            for p in rows
+        ]
+    }
+
+
+@router.get("/course-learners")
+async def list_course_learners(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """列出有 active 课程分发的学员，供 demo 学员端账号切换菜单使用。"""
+    learner_ids = (
+        select(CourseAssignment.learner_id)
+        .where(CourseAssignment.status == CourseAssignmentStatus.active)
+        .distinct()
+    )
+    rows = (
+        await session.execute(
+            select(Learner)
+            .where(Learner.id.in_(learner_ids))
+            .where(Learner.external_ref != "")
+            .order_by(Learner.id)
+        )
+    ).scalars().all()
+    return {"items": [_learner_to_public(l) for l in rows]}
+
+
 @router.get("/courses/{product_code}")
 async def get_course(
-    product_code: str, session: AsyncSession = Depends(get_session)
+    product_code: str, request: Request, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     """返回单个产品的完整课程数据：knowledge 模块、默认客户、空剧本。"""
     p = (
@@ -279,11 +379,49 @@ async def get_course(
         default_customer = _default_customer(p)
         customers = [default_customer]
 
+    base_url = str(request.base_url).rstrip("/")
     return {
         "id": p.code,
-        "meta": _meta_from_product(p, len(kps)),
+        "meta": _meta_from_product(p, len(kps), base_url=base_url),
         "knowledge": modules,
         "customer": default_customer,
         "customers": customers,
         "script": [],
+    }
+
+
+@router.get("/courses/{product_code}/kps")
+async def list_course_kps(
+    product_code: str, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """学员端公开：拉某产品下 approved KP + 富字段卡片（kp_card_content）。
+    替代受 internal-token 保护的 /products/{id}/kps，供 app 无 token 调用。
+    """
+    p = (
+        await session.execute(select(Product).where(Product.code == product_code))
+    ).scalar_one_or_none()
+    if not p or p.status != ProductStatus.active:
+        raise HTTPException(404, f"product {product_code} not found")
+    rows = (
+        await session.execute(
+            select(KpRegistry, KpCardContent)
+            .join(ProductKp, ProductKp.kp_id == KpRegistry.id)
+            .outerjoin(KpCardContent, KpCardContent.kp_id == KpRegistry.id)
+            .where(ProductKp.product_id == p.id)
+            .where(ProductKp.removed_at.is_(None))
+            .where(KpRegistry.status == KpStatus.approved)
+            .order_by(ProductKp.order_index, ProductKp.id)
+        )
+    ).all()
+    return {
+        "items": [
+            {
+                "id": k.id,
+                "name": k.name,
+                "definition": k.definition,
+                "category": k.category,
+                "card": _card_to_out(card),
+            }
+            for k, card in rows
+        ]
     }

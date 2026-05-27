@@ -6,9 +6,25 @@ import re
 
 from sqlalchemy import select
 
-from ..db import KbChunk, KbDocument, KpChunkLink, KpRegistry, KpStatus, Product, SessionLocal
+from ..db import (
+    KbChunk,
+    KbDocument,
+    KpCardContent,
+    KpChunkLink,
+    KpRegistry,
+    KpStatus,
+    KpTier,
+    Product,
+    SessionLocal,
+)
 from ..embeddings import embed
-from ..vector_store import search as milvus_search
+from ..vector_store import search as milvus_search, search_kps as milvus_search_kps
+
+
+# KP-first 召回参数：每条 query 在 KP 集合里取 top_K_KP 个 KP，每个 KP 最多拉 CHUNKS_PER_KP 个支持 chunk。
+# 这两个值故意小：KP 召回是补充路径，主路仍是 chunk-direct；过大反而稀释相关性。
+_TOP_K_KP = 8
+_CHUNKS_PER_KP = 5
 
 
 class RetrievalError(RuntimeError):
@@ -46,6 +62,107 @@ def sanitize_untrusted(text: str | None, *, max_len: int = 600) -> str:
     if len(s) > max_len:
         s = s[:max_len] + "…"
     return s
+
+
+async def _kp_first_chunk_hits(
+    query_vectors: list[list[float]],
+    product_doc_ids: list[int] | None,
+) -> list[dict]:
+    """对每个 query embedding 在 kp_embeddings 上做 search → 拿到 top KP → 用 SQL 找这些 KP 的支持 chunks
+    → 按 product_doc_ids 过滤 → 返回伪 hits {chunk_id, score, doc_id, kp_ids, via_kp, kp_first_score}。
+
+    score 用 KP search 的 cosine 距离作为 chunk 的代理分数（chunks_per_kp 内的 chunk 共享同一 kp_score）。
+    后续与 chunk-direct 路径合并时按 chunk_id 取 max；via_kp 字段保留用于 debug / 下游标注。
+    """
+    if not query_vectors:
+        return []
+    try:
+        kp_hits_per_query = await asyncio.gather(
+            *[
+                asyncio.to_thread(milvus_search_kps, v, _TOP_K_KP, True)
+                for v in query_vectors
+            ]
+        )
+    except Exception as e:
+        # KP 路径失败不能阻断整体 RAG（chunk 路径仍可能有结果）
+        # 抛 RetrievalError 让上层决定要不要降级，与现有 milvus 失败语义一致
+        raise RetrievalError(f"Milvus KP 检索失败: {e}") from e
+
+    # 合并 KP 命中：kp_id → 最高 score
+    kp_score: dict[int, float] = {}
+    for hits in kp_hits_per_query:
+        for h in hits or []:
+            kid = int(h["kp_id"])
+            s = float(h.get("score") or 0.0)
+            if kid not in kp_score or kp_score[kid] < s:
+                kp_score[kid] = s
+    if not kp_score:
+        return []
+
+    # 拉每个 KP 的 top CHUNKS_PER_KP 支持 chunk（按 relevance 降序），并按 product_doc_ids 过滤
+    kp_ids = list(kp_score.keys())
+    try:
+        async with SessionLocal() as session:
+            stmt = (
+                select(KpChunkLink.kp_id, KpChunkLink.chunk_id, KpChunkLink.relevance, KbChunk.doc_id)
+                .join(KbChunk, KbChunk.id == KpChunkLink.chunk_id)
+                .where(KpChunkLink.kp_id.in_(kp_ids))
+            )
+            if product_doc_ids:
+                stmt = stmt.where(KbChunk.doc_id.in_(product_doc_ids))
+            rows = (await session.execute(stmt)).all()
+    except Exception as e:
+        raise RetrievalError(f"DB 查询失败: {e}") from e
+
+    # 按 kp_id 分组，截 CHUNKS_PER_KP
+    by_kp: dict[int, list[tuple[int, float, int]]] = {}
+    for kid, cid, rel, did in rows:
+        by_kp.setdefault(int(kid), []).append((int(cid), float(rel or 0.0), int(did)))
+    for kid in by_kp:
+        by_kp[kid].sort(key=lambda x: x[1], reverse=True)
+        by_kp[kid] = by_kp[kid][:_CHUNKS_PER_KP]
+
+    out: list[dict] = []
+    for kid, items in by_kp.items():
+        base_score = kp_score[kid]
+        for cid, _rel, did in items:
+            out.append(
+                {
+                    "chunk_id": cid,
+                    "score": base_score,
+                    "doc_id": did,
+                    "kp_ids": [kid],
+                    "via_kp": kid,
+                    "kp_first_score": base_score,
+                }
+            )
+    return out
+
+
+def _merge_hits(*sources: list[dict]) -> list[dict]:
+    """按 chunk_id 合并多路 hits：score 取 max，kp_ids 合并去重，保留最高置信的 KP-first 标记。"""
+    merged: dict[int, dict] = {}
+    for src in sources:
+        for h in src or []:
+            cid = int(h["chunk_id"])
+            cur = merged.get(cid)
+            if cur is None:
+                merged[cid] = {**h, "kp_ids": list(h.get("kp_ids") or [])}
+                continue
+            # score 取 max
+            if float(h.get("score") or 0.0) > float(cur.get("score") or 0.0):
+                cur["score"] = h["score"]
+            # 合并 kp_ids
+            new_kp_ids = set(cur.get("kp_ids") or [])
+            new_kp_ids.update(h.get("kp_ids") or [])
+            cur["kp_ids"] = list(new_kp_ids)
+            # via_kp / kp_first_score：保留最高 KP-first 分数对应的 KP 标记
+            h_kp_score = float(h.get("kp_first_score") or 0.0)
+            cur_kp_score = float(cur.get("kp_first_score") or 0.0)
+            if h.get("via_kp") and (not cur.get("via_kp") or h_kp_score > cur_kp_score):
+                cur["via_kp"] = h["via_kp"]
+                cur["kp_first_score"] = h_kp_score
+    return list(merged.values())
 
 
 async def retrieve_chunks(
@@ -108,8 +225,19 @@ async def retrieve_chunks(
         )
     except Exception as e:
         raise RetrievalError(f"Milvus 检索失败: {e}") from e
+
+    # KP-first 补充路径：KP 命中后把其挂的支持 chunks 也带进候选池
+    try:
+        kp_path_hits = await _kp_first_chunk_hits([vecs[0]], product_doc_ids)
+    except RetrievalError:
+        # KP 路径失败：降级，不阻断主路
+        kp_path_hits = []
+
+    hits = _merge_hits(hits, kp_path_hits)
     if not hits:
         return []
+    # 合并后按 score 重排序、截 top_k
+    hits = sorted(hits, key=lambda h: float(h.get("score") or 0.0), reverse=True)[:top_k]
 
     chunk_ids = [h["chunk_id"] for h in hits]
     try:
@@ -129,16 +257,23 @@ async def retrieve_chunks(
 
             kp_links = (
                 await session.execute(
-                    select(KpChunkLink, KpRegistry)
+                    select(KpChunkLink, KpRegistry, KpCardContent.tier)
                     .join(KpRegistry, KpRegistry.id == KpChunkLink.kp_id)
+                    .outerjoin(KpCardContent, KpCardContent.kp_id == KpRegistry.id)
                     .where(KpChunkLink.chunk_id.in_(chunk_ids))
                     .where(KpRegistry.status == KpStatus.approved)
                 )
             ).all()
             kp_per_chunk: dict[int, list[dict]] = {}
-            for link, kp in kp_links:
+            for link, kp, tier in kp_links:
+                tier_val = tier.value if hasattr(tier, "value") else (tier or KpTier.detail.value)
                 kp_per_chunk.setdefault(link.chunk_id, []).append(
-                    {"kp_id": kp.id, "name": kp.name, "link_relevance": float(link.relevance or 0.0)}
+                    {
+                        "kp_id": kp.id,
+                        "name": kp.name,
+                        "link_relevance": float(link.relevance or 0.0),
+                        "tier": tier_val,
+                    }
                 )
     except UnknownProductError:
         raise
@@ -168,6 +303,8 @@ async def retrieve_chunks(
                 "slide_indices": slide_indices,
                 "text": chunk.text,
                 "kps": kp_per_chunk.get(chunk.id, []),
+                "via_kp": h.get("via_kp"),
+                "kp_first_score": h.get("kp_first_score"),
             }
         )
     return candidates
@@ -219,16 +356,23 @@ async def _hydrate_chunks(chunk_ids: list[int], product_id: int | None) -> tuple
 
             kp_links = (
                 await session.execute(
-                    select(KpChunkLink, KpRegistry)
+                    select(KpChunkLink, KpRegistry, KpCardContent.tier)
                     .join(KpRegistry, KpRegistry.id == KpChunkLink.kp_id)
+                    .outerjoin(KpCardContent, KpCardContent.kp_id == KpRegistry.id)
                     .where(KpChunkLink.chunk_id.in_(chunk_ids))
                     .where(KpRegistry.status == KpStatus.approved)
                 )
             ).all()
             kp_per_chunk: dict[int, list[dict]] = {}
-            for link, kp in kp_links:
+            for link, kp, tier in kp_links:
+                tier_val = tier.value if hasattr(tier, "value") else (tier or KpTier.detail.value)
                 kp_per_chunk.setdefault(link.chunk_id, []).append(
-                    {"kp_id": kp.id, "name": kp.name, "link_relevance": float(link.relevance or 0.0)}
+                    {
+                        "kp_id": kp.id,
+                        "name": kp.name,
+                        "link_relevance": float(link.relevance or 0.0),
+                        "tier": tier_val,
+                    }
                 )
             return chunk_map, kp_per_chunk
     except Exception as e:
@@ -272,14 +416,33 @@ async def retrieve_chunks_multi(
     except Exception as e:
         raise RetrievalError(f"Milvus 检索失败: {e}") from e
 
-    # 合并：按 chunk_id 取 max score
+    # KP-first 补充路径：对所有 query 一次性走 KP 召回；失败降级（不阻断 chunk-direct 路径）
+    try:
+        kp_path_hits = await _kp_first_chunk_hits(list(vecs), product_doc_ids)
+    except RetrievalError:
+        kp_path_hits = []
+
+    # 合并：按 chunk_id 取 max score；同时记录 KP-first 证据给下游使用
     merged: dict[int, float] = {}
+    via_kp_map: dict[int, int] = {}
+    kp_first_score_map: dict[int, float] = {}
     for hits in hits_per_query:
         for h in hits or []:
             cid = h["chunk_id"]
             s = float(h.get("score") or 0.0)
             if cid not in merged or merged[cid] < s:
                 merged[cid] = s
+    for h in kp_path_hits:
+        cid = h["chunk_id"]
+        s = float(h.get("score") or 0.0)
+        if cid not in merged or merged[cid] < s:
+            merged[cid] = s
+        kp_first_score = float(h.get("kp_first_score") or 0.0)
+        if h.get("via_kp") and (
+            cid not in via_kp_map or kp_first_score > kp_first_score_map.get(cid, 0.0)
+        ):
+            via_kp_map[cid] = int(h["via_kp"])
+            kp_first_score_map[cid] = kp_first_score
     if not merged:
         return []
 
@@ -310,6 +473,98 @@ async def retrieve_chunks_multi(
                 "slide_indices": slide_indices,
                 "text": chunk.text,
                 "kps": kp_per_chunk.get(chunk.id, []),
+                "via_kp": via_kp_map.get(cid),
+                "kp_first_score": kp_first_score_map.get(cid),
             }
         )
     return candidates
+
+
+async def fetch_chunks_by_kp_ids(
+    kp_ids: list[int],
+    product_doc_ids: list[int] | None,
+    per_kp_limit: int = 2,
+    total_limit: int = 6,
+) -> list[dict]:
+    """根据明确的 kp_id 列表，直接拉这些 KP 的支持 chunk，按 KpChunkLink.relevance 降序。
+
+    用于 Verifier reflection：当首答漏覆 core KP 时，明确拿这几个 KP 的素材补进 context。
+    返回的 dict 与 retrieve_chunks_multi 的 candidate 同 shape（带 kps[].tier）。
+    """
+    kp_ids = [int(k) for k in (kp_ids or []) if k is not None]
+    if not kp_ids:
+        return []
+    try:
+        async with SessionLocal() as session:
+            stmt = (
+                select(KpChunkLink.kp_id, KpChunkLink.chunk_id, KpChunkLink.relevance)
+                .join(KbChunk, KbChunk.id == KpChunkLink.chunk_id)
+                .where(KpChunkLink.kp_id.in_(kp_ids))
+            )
+            if product_doc_ids:
+                stmt = stmt.where(KbChunk.doc_id.in_(product_doc_ids))
+            rows = (await session.execute(stmt)).all()
+    except Exception as e:
+        raise RetrievalError(f"DB 查询失败: {e}") from e
+
+    # 按 kp_id 分组，每组按 relevance 降序截 per_kp_limit
+    by_kp: dict[int, list[tuple[int, float]]] = {}
+    for kid, cid, rel in rows:
+        by_kp.setdefault(int(kid), []).append((int(cid), float(rel or 0.0)))
+    selected_chunk_ids: list[int] = []
+    seen: set[int] = set()
+    # round-robin 取，保证多个 KP 都能露脸而不是单个 KP 占满
+    cursors = {k: 0 for k in by_kp}
+    for v in by_kp.values():
+        v.sort(key=lambda x: x[1], reverse=True)
+    while len(selected_chunk_ids) < total_limit:
+        progressed = False
+        for kid in list(by_kp.keys()):
+            i = cursors[kid]
+            if i >= per_kp_limit or i >= len(by_kp[kid]):
+                continue
+            cid, _rel = by_kp[kid][i]
+            cursors[kid] += 1
+            progressed = True
+            if cid in seen:
+                continue
+            seen.add(cid)
+            selected_chunk_ids.append(cid)
+            if len(selected_chunk_ids) >= total_limit:
+                break
+        if not progressed:
+            break
+
+    if not selected_chunk_ids:
+        return []
+
+    # 复用 _hydrate_chunks 拉详情 + KP 列表（带 tier）；product_id=None：已通过 product_doc_ids 过滤
+    chunk_map, kp_per_chunk = await _hydrate_chunks(selected_chunk_ids, product_id=None)
+
+    out: list[dict] = []
+    for cid in selected_chunk_ids:
+        pair = chunk_map.get(cid)
+        if not pair:
+            continue
+        chunk, doc = pair
+        meta = chunk.meta or {}
+        slide_indices = [
+            int(s)
+            for s in (meta.get("slide_indices") or [])
+            if isinstance(s, (int, str)) and str(s).lstrip("-").isdigit()
+        ]
+        out.append(
+            {
+                "chunk_id": chunk.id,
+                "score": 0.0,  # 非 embedding 检索而来，置 0；下游不依赖该值
+                "doc_id": doc.id,
+                "doc_name": doc.file_name,
+                "slide_indices": slide_indices,
+                "text": chunk.text,
+                "kps": kp_per_chunk.get(chunk.id, []),
+                "via_kp": next((k for k, v in by_kp.items() if any(c == chunk.id for c, _ in v)), None),
+                "kp_first_score": None,
+                "rerank_score": None,  # 不参与 rerank，保留字段供下游一致访问
+            }
+        )
+    return out

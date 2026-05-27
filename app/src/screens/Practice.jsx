@@ -39,6 +39,9 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
   const [finished, setFinished] = useState(false);
   const [evaluating, setEvaluating] = useState(false);   // 后端正在生成评估报告
   const [evalError, setEvalError] = useState('');
+  const [evalStage, setEvalStage] = useState(0);
+  const [evalProgress, setEvalProgress] = useState(0);
+  const [evalElapsed, setEvalElapsed] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const scrollRef = useRef(null);
   const sendingRef = useRef(false);  // 同步守卫
@@ -125,6 +128,33 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
     setHintsError('');
     setHintsLoading(false);
   }, [lastCustomerText]);
+
+  // 评估等待期间推进阶段文案、假进度条、计时器
+  const EVAL_STAGES = ['正在分析对话内容…', '正在评估知识点覆盖度…', '正在生成能力报告…', '即将完成，请稍候…'];
+  useEffect(() => {
+    if (!evaluating) {
+      setEvalStage(0);
+      setEvalProgress(0);
+      setEvalElapsed(0);
+      return undefined;
+    }
+    const t0 = Date.now();
+    const stageTimer = setInterval(() => {
+      const dt = (Date.now() - t0) / 1000;
+      setEvalStage(dt < 4 ? 0 : dt < 10 ? 1 : dt < 20 ? 2 : 3);
+    }, 200);
+    const progTimer = setInterval(() => {
+      setEvalProgress(p => p + (0.92 - p) * 0.012);
+    }, 100);
+    const tickTimer = setInterval(() => {
+      setEvalElapsed(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    return () => {
+      clearInterval(stageTimer);
+      clearInterval(progTimer);
+      clearInterval(tickTimer);
+    };
+  }, [evaluating]);
 
   // 加载态期间推进阶段文案、假进度条、计时器；hintsLoading 切回 false 时统一清理
   useEffect(() => {
@@ -470,12 +500,44 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
             onOpenKp={openKpDetail}
           />
         )}
+        {/* Open 模式知识点引导 — 非郑先生场景下提示可引用知识点 */}
+        {!isZheng && !strictMode && started && !finished && !thinking
+          && history.length > 0 && history[history.length - 1].role === 'customer' && (
+          <OpenModeKpHint
+            t={t}
+            kpIndex={KP_INDEX}
+            citedKp={citedKp}
+            onOpenLibrary={() => setShowLibrary(true)}
+            onOpenKp={openKpDetail}
+          />
+        )}
         {thinking && !history.some(h => h.streaming) && <ThinkingDots t={t} />}
         {showKpPop && <KnowledgePopup t={t} kpId={showKpPop} />}
       </div>
 
-      {/* Bottom: hints (collapsible) + input */}
-      {!finished ? (
+      {/* Bottom CTA: pre-start 常驻"开始接待"按钮，保证小屏也可见 */}
+      {!started && (
+        <div style={{ padding: '10px 14px 18px', background: t.bg, borderTop: `1px solid ${t.line}` }}>
+          <button
+            onClick={startSession}
+            style={{
+              width: '100%', height: 52, border: 0, borderRadius: 16,
+              background: `linear-gradient(135deg, ${t.accent}, ${t.accent}cc)`,
+              color: '#fff', fontSize: 15.5, fontWeight: 700, letterSpacing: '0.04em',
+              cursor: 'pointer', fontFamily: 'inherit',
+              boxShadow: `4px 4px 10px ${t.sDark}, -2px -2px 6px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22)`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}
+          >
+            <Icon name="play" size={14} color="#fff" />
+            {isZheng ? '开始接待' : `接待 ${currentCustomer.name}`}
+          </button>
+        </div>
+      )}
+
+      {/* Bottom: hints (collapsible) + input —
+          pre-start 状态下完全不渲染 BottomBar，避免挤压开始按钮 */}
+      {!started ? null : !finished ? (
         <BottomBar
           t={t} input={input} setInput={setInput} onSend={sendOpen}
           showHints={showHints} toggleHints={toggleHints}
@@ -494,26 +556,40 @@ function PracticeScreen({ t, state, setState, go, tweaks }) {
         />
       ) : (
         <div style={{ padding: '12px 18px 22px' }}>
-          <div style={{ ...neuRaised(t, 22, 1.2), padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: t.textSoft }}>演练完成</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: t.text }}>
-                {evaluating ? 'AI 教练正在生成评估…' : evalError ? '评估生成失败' : '评估报告已生成'}
+          <div style={{ ...neuRaised(t, 22, 1.2), padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: t.textSoft }}>演练完成</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: t.text }}>
+                  {evaluating ? 'AI 教练正在生成评估' : evalError ? '评估生成失败' : '评估报告已生成'}
+                </div>
               </div>
-              {evaluating && (
-                <div style={{ fontSize: 11, color: t.textMute, marginTop: 4 }}>
-                  正在分析整场对话与知识点覆盖，通常 3–10 秒
-                </div>
-              )}
-              {!!evalError && !evaluating && (
-                <div style={{ fontSize: 11, color: t.bad, marginTop: 4 }}>
-                  {evalError} · 将使用本地兜底计算
-                </div>
-              )}
+              <PillButton t={t} primary disabled={evaluating} onClick={() => !evaluating && go('report')}>
+                {evaluating ? '生成中…' : '查看评估 →'}
+              </PillButton>
             </div>
-            <PillButton t={t} primary disabled={evaluating} onClick={() => !evaluating && go('report')}>
-              {evaluating ? '生成中…' : '查看评估 →'}
-            </PillButton>
+            {evaluating && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ height: 3, ...neuInset(t, 999, 0.4), overflow: 'hidden', marginBottom: 10 }}>
+                  <div style={{
+                    height: '100%', width: `${evalProgress * 100}%`,
+                    background: `linear-gradient(90deg, ${t.accent}, ${t.accentSoft})`,
+                    transition: 'width .3s ease',
+                  }} />
+                </div>
+                <div style={{ fontSize: 12, color: t.textSoft }}>{EVAL_STAGES[evalStage]}</div>
+                {evalElapsed >= 15 && (
+                  <div style={{ fontSize: 11, color: t.textMute, marginTop: 3 }}>
+                    已等待 {evalElapsed}s，通常 10–30 秒
+                  </div>
+                )}
+              </div>
+            )}
+            {!!evalError && !evaluating && (
+              <div style={{ fontSize: 11, color: t.bad, marginTop: 8 }}>
+                {evalError} · 将使用本地兜底计算
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -724,6 +800,8 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
   }
 
   // ── Full opening card (pre-start) ──────────────────────
+  // 卡片自身作为可滚动容器：当内容超过外层 flex 分配高度时，用户在卡片内上下滑动
+  // 不再用 overflow:hidden 裁掉内容（之前导致小屏看不到完整任务/评估等信息）
   return (
     <div style={{
       ...neuRaised(t, 22, 1.1),
@@ -731,7 +809,10 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
       background: `linear-gradient(155deg, ${t.surface} 0%, ${t.surface2} 100%)`,
       transition: 'all .35s ease',
       marginBottom: 6,
-      position: 'relative', overflow: 'hidden',
+      position: 'relative',
+      overflowY: 'auto',
+      minHeight: 0,
+      WebkitOverflowScrolling: 'touch',
     }}>
       {/* Decorative corner accent */}
       <div style={{
@@ -858,22 +939,8 @@ function ScenarioBrief({ t, started, onStart, customer, customers, onPickCustome
             ))}
           </div>
 
-          {/* CTA */}
-          <button
-            onClick={onStart}
-            style={{
-              marginTop: 16, width: '100%', height: 48, border: 0, borderRadius: 14,
-              background: `linear-gradient(135deg, ${t.accent}, ${t.accent}cc)`,
-              color: '#fff', fontSize: 15, fontWeight: 700, letterSpacing: '0.04em',
-              cursor: 'pointer', fontFamily: 'inherit',
-              boxShadow: `4px 4px 10px ${t.sDark}, -2px -2px 6px ${t.sLight}, inset 0 1px 0 rgba(255,255,255,0.22)`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            }}
-          >
-            <Icon name="play" size={14} color="#fff" />
-            {isZheng ? '开始接待' : `接待 ${customer.name}`}
-          </button>
-          <div style={{ fontSize: 10.5, color: t.textMute, textAlign: 'center', marginTop: 10, lineHeight: 1.4 }}>
+          {/* CTA 已移到屏幕底部常驻栏，避免小屏被挤出可视区 · 这里只保留说明 */}
+          <div style={{ fontSize: 10.5, color: t.textMute, textAlign: 'center', marginTop: 14, lineHeight: 1.4 }}>
             {isZheng
               ? '演练全程由 AI 实时扮演客户 · 卡住时可点击底部 ✦ 查看回应思路'
               : 'AI 将以 ' + customer.name + ' 的人设回应你 · 直接打字与客户对话'}
@@ -1024,6 +1091,49 @@ function KnowledgePopup({ t, kpId }) {
   );
 }
 
+// ─── Open 模式知识点引导横幅 ────────────────────────────────
+function OpenModeKpHint({ t, kpIndex, citedKp, onOpenLibrary, onOpenKp }) {
+  const suggestions = Object.entries(kpIndex)
+    .filter(([id, ref]) => ref.point.tier === 'core' && !citedKp.has(id))
+    .slice(0, 3);
+  return (
+    <div style={{ padding: '6px 14px 2px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div
+        onClick={onOpenLibrary}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 12px', borderRadius: 12,
+          background: `${t.accent}12`, cursor: 'pointer',
+          border: `1px solid ${t.accent}30`,
+        }}
+      >
+        <span style={{ fontSize: 14 }}>💡</span>
+        <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: t.accent }}>知识库 · 可引用这些知识点</div>
+        <Icon name="arrow" size={13} color={t.accent} />
+      </div>
+      {suggestions.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingLeft: 4 }}>
+          {suggestions.map(([id, ref]) => (
+            <div
+              key={id}
+              onClick={() => onOpenKp(id)}
+              style={{
+                fontSize: 11, fontWeight: 600, color: t.textSoft,
+                padding: '4px 10px', borderRadius: 999,
+                border: `1px solid ${t.line}`,
+                background: t.surface2,
+                cursor: 'pointer',
+              }}
+            >
+              {ref.point.title}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Bottom bar: hints + input ─────────────────────────────
 function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, hintsLoading, hintsError, hintsMeta, hintStage, hintProgress, hintElapsed, onCancelHints, onPickHint, onOpenLibrary, autoPath, disabled, started, thinking }) {
   const hintBtnDisabled = !started || thinking;
@@ -1077,7 +1187,7 @@ function BottomBar({ t, input, setInput, onSend, showHints, toggleHints, hints, 
                 <span style={{
                   display: 'inline-block', width: 18, textAlign: 'center', fontSize: 13,
                 }}>
-                  {hintStage === 0 ? '🔍' : hintStage === 1 ? '👤' : '✦'}
+                  {hintStage === 0 ? '🔍' : hintStage === 1 ? '👤' : '✨'}
                 </span>
                 <span style={{ fontSize: 12.5, color: t.textSoft, fontWeight: 500 }}>
                   {hintStage === 0
@@ -1361,7 +1471,7 @@ function FinishConfirmSheet({ t, turns, onCancel, onConfirm }) {
           结束本场演练？
         </div>
         <div style={{ fontSize: 13, color: t.textSoft, lineHeight: 1.65, marginBottom: 18 }}>
-          评估报告将基于已完成的 <b style={{ color: t.accent }}>{turns}</b> 轮对话生成，结束后无法继续与客户对话。
+          将基于 <b style={{ color: t.accent }}>{turns}</b> 轮对话生成评估报告。
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button onClick={onCancel} style={{
@@ -1369,7 +1479,7 @@ function FinishConfirmSheet({ t, turns, onCancel, onConfirm }) {
             background: t.surface, color: t.text,
             fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
             boxShadow: `3px 3px 6px ${t.sDark}, -2px -2px 4px ${t.sLight}`,
-          }}>再聊聊</button>
+          }}>继续演练</button>
           <button onClick={onConfirm} style={{
             flex: 1.2, height: 46, borderRadius: 14, border: 0,
             background: `linear-gradient(135deg, ${t.accent}, ${t.accent}cc)`,
