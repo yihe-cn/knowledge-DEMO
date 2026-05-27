@@ -37,6 +37,61 @@ function buildIndices(product) {
   return product;
 }
 
+// category → 模块 icon 兜底
+const KP_CATEGORY_ICON = {
+  '原理科普': '📘',
+  '三电与续航': '⚡',
+  '智能驾驶': '🛰',
+  '销售话术': '💬',
+  '产品知识': '📦',
+};
+function categoryIcon(category) {
+  return KP_CATEGORY_ICON[category] || '📌';
+}
+
+// 把后端返回的 KP 列表合并进某个 product 的 kpIndex（按数字 id 覆盖 mock 同 id 项）
+function mergeServerKps(product, items) {
+  if (!product || !Array.isArray(items)) return;
+  items.forEach(kp => {
+    const card = kp.card || {};
+    const point = {
+      id: kp.id,
+      title: kp.name,
+      tier: card.tier || 'detail',
+      spec: card.spec || kp.definition || '',
+      customerVoice: card.customerVoice || '',
+      sources: Array.isArray(card.sources) ? card.sources : [],
+      appliesTo: Array.isArray(card.appliesTo) ? card.appliesTo : [],
+      notApplicable: Array.isArray(card.notApplicable) ? card.notApplicable : [],
+      rebuttals: Array.isArray(card.rebuttals) ? card.rebuttals : [],
+      sales: card.sales || '',
+    };
+    const module_ = {
+      title: kp.category || '未分类',
+      icon: categoryIcon(kp.category),
+      points: [point],
+    };
+    product.kpIndex[kp.id] = { module: module_, point };
+  });
+}
+
+// 拉服务端某产品的 approved KPs，merge 到本地 product.kpIndex
+// 仅对从后端注册的 product（有数字 backendId）有效；静态 mock 产品没数字 id，跳过。
+async function loadServerKpsInto(product) {
+  if (!product) return;
+  // 仅对从后端注册（有 backendId）的产品拉富字段。
+  // 走公开的 /courses/{code}/kps（不需 internal token），而非受保护的 /products/{id}/kps。
+  if (!(product.meta && product.meta.backendId)) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/courses/${encodeURIComponent(product.id)}/kps`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    mergeServerKps(product, data.items || []);
+  } catch (e) {
+    console.warn('[productCatalog] loadServerKps failed:', e);
+  }
+}
+
 export const PRODUCTS = {
   zeekr007: buildIndices({
     id: 'zeekr007',
@@ -111,16 +166,58 @@ export const ACCOUNTS = [
 
 export const ACCOUNT_INDEX = {};
 ACCOUNTS.forEach(a => { ACCOUNT_INDEX[a.id] = a; });
+export const DYNAMIC_ACCOUNT_IDS = new Set();
+
+function avatarFromName(name, fallback) {
+  const s = String(name || fallback || '学员').trim();
+  return s.slice(0, 1).toUpperCase() || '学';
+}
+
+export function registerLearnerAccount(learnerOrRef) {
+  const raw = typeof learnerOrRef === 'string'
+    ? { external_ref: learnerOrRef, name: learnerOrRef }
+    : (learnerOrRef || {});
+  const id = String(raw.external_ref || raw.account || raw.id || '').trim();
+  if (!id) return null;
+  const name = String(raw.name || id).trim();
+  const dept = String(raw.dept || '').trim();
+  const next = {
+    id,
+    name,
+    avatar: avatarFromName(name, id),
+    avatarColor: 'cyan',
+    role: '学员',
+    org: dept || 'SIMUGO 学员',
+    orgShort: dept || 'LEARNER',
+    productIds: [],
+  };
+  const existing = ACCOUNT_INDEX[id];
+  if (existing) {
+    if (DYNAMIC_ACCOUNT_IDS.has(id)) Object.assign(existing, next);
+    return existing;
+  }
+  ACCOUNT_INDEX[id] = next;
+  ACCOUNTS.push(next);
+  DYNAMIC_ACCOUNT_IDS.add(id);
+  return next;
+}
+
+export function getAccount(accountRef) {
+  if (accountRef && !ACCOUNT_INDEX[accountRef]) registerLearnerAccount(accountRef);
+  return ACCOUNT_INDEX[accountRef] || ACCOUNTS[0];
+}
 
 let _activeProductId = null;
 
 // ─── 后端动态产品 ──────────────────────────────────────────────
-// admin 创建的产品通过 /api/courses 拉到前端，与上面静态注册的 PRODUCTS 合并。
+// admin 创建的产品通过 /api/courses/by-account 拉到前端，与上面静态注册的 PRODUCTS 合并。
 // meta.fromBackend = true 用于在 AccountHome 区分来源。
 const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE)
   || 'http://localhost:8000';
 
 export const REMOTE_PRODUCT_IDS = new Set();
+export const ASSIGNED_PRODUCT_IDS = new Set();
+export const VISIBILITY_STATE = { assignmentsLoaded: false };
 
 function applyWindowData(p) {
   if (typeof window === 'undefined') return;
@@ -135,28 +232,104 @@ function applyWindowData(p) {
   };
 }
 
-export async function loadRemoteProducts() {
+function _mergeRemoteItems(items, { exposeRemote = true } = {}) {
+  items.forEach(item => {
+    if (PRODUCTS[item.id] && PRODUCTS[item.id].knowledge) {
+      // 静态产品：只合并后端元数据（backendId、coverImage），不覆盖本地 knowledge
+      const existing = PRODUCTS[item.id];
+      const remoteBackendId = item.meta && item.meta.backendId;
+      const remoteCoverImage = item.meta && item.meta.coverImage;
+      if (remoteBackendId && !(existing.meta && existing.meta.backendId)) {
+        existing.meta = { ...(existing.meta || {}), backendId: remoteBackendId };
+      }
+      if (remoteCoverImage) {
+        existing.meta = { ...(existing.meta || {}), coverImage: remoteCoverImage };
+      }
+      return;
+    }
+    PRODUCTS[item.id] = {
+      id: item.id,
+      meta: item.meta,
+      knowledge: null,
+      customer: null,
+      customers: [],
+      customerIndex: {},
+      script: [],
+      kpIndex: {},
+    };
+    if (exposeRemote) REMOTE_PRODUCT_IDS.add(item.id);
+  });
+}
+
+export function getVisibleProductIds(account) {
+  const out = [];
+  const add = (id) => {
+    if (id && PRODUCTS[id] && !out.includes(id)) out.push(id);
+  };
+
+  if (!VISIBILITY_STATE.assignmentsLoaded) {
+    (account?.productIds || []).forEach(add);
+    REMOTE_PRODUCT_IDS.forEach(add);
+    return out;
+  }
+
+  // 若静态 mock 产品还没有对应后端课程，保留为本地演示兜底；一旦后端存在该课程，
+  // 可见性以 /courses/by-account 返回的 active 分发为准。
+  (account?.productIds || []).forEach((id) => {
+    const p = PRODUCTS[id];
+    if (p && !(p.meta && p.meta.backendId)) add(id);
+  });
+  ASSIGNED_PRODUCT_IDS.forEach(add);
+  return out;
+}
+
+export async function loadLearnerAccounts() {
   try {
-    const resp = await fetch(`${API_BASE}/api/courses`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const resp = await fetch(`${API_BASE}/api/course-learners`);
+    if (!resp.ok) return [];
     const data = await resp.json();
     const items = data.items || [];
-    items.forEach(item => {
-      // 已有静态注册（带 knowledge）的同 id 完全不动，避免后端空 meta 覆盖静态丰富 meta
-      if (PRODUCTS[item.id] && PRODUCTS[item.id].knowledge) return;
-      PRODUCTS[item.id] = {
-        id: item.id,
-        meta: item.meta,
-        knowledge: null, // 标记尚未加载详情，进入产品时再 fetch
-        customer: null,
-        customers: [],
-        customerIndex: {},
-        script: [],
-        kpIndex: {},
-      };
-      REMOTE_PRODUCT_IDS.add(item.id);
+    items.forEach(registerLearnerAccount);
+    return items;
+  } catch (e) {
+    console.warn('[productCatalog] loadLearnerAccounts failed:', e);
+    return [];
+  }
+}
+
+export async function loadRemoteProducts(accountRef) {
+  try {
+    // 动态课程按账号分发；切换账号时先移除上一账号的动态课程缓存。
+    Array.from(REMOTE_PRODUCT_IDS).forEach(id => {
+      delete PRODUCTS[id];
     });
-    return items.map(i => i.id);
+    REMOTE_PRODUCT_IDS.clear();
+    ASSIGNED_PRODUCT_IDS.clear();
+    VISIBILITY_STATE.assignmentsLoaded = false;
+
+    // 始终拉全量 /api/courses 合并静态产品的后端元数据（backendId、coverImage 等）
+    const allResp = await fetch(`${API_BASE}/api/courses`);
+    if (allResp.ok) {
+      const allData = await allResp.json();
+      _mergeRemoteItems(allData.items || [], { exposeRemote: false });
+    }
+    await loadLearnerAccounts();
+
+    // 有账号时额外拉分发列表，补充该账号专属的动态课程
+    if (accountRef) {
+      const accResp = await fetch(`${API_BASE}/api/courses/by-account/${encodeURIComponent(accountRef)}`);
+      if (accResp.ok) {
+        const accData = await accResp.json();
+        if (accData.learner) registerLearnerAccount(accData.learner);
+        else if (!ACCOUNT_INDEX[accountRef]) registerLearnerAccount(accountRef);
+        const items = accData.items || [];
+        items.forEach(item => ASSIGNED_PRODUCT_IDS.add(item.id));
+        _mergeRemoteItems(items, { exposeRemote: true });
+        VISIBILITY_STATE.assignmentsLoaded = true;
+      }
+    }
+
+    return Object.keys(PRODUCTS);
   } catch (e) {
     console.warn('[productCatalog] loadRemoteProducts failed:', e);
     return [];
@@ -165,7 +338,15 @@ export async function loadRemoteProducts() {
 
 export async function ensureProductLoaded(productId) {
   const existing = PRODUCTS[productId];
-  if (existing && existing.knowledge) return existing; // 已加载（静态或缓存）
+  if (existing && existing.knowledge) {
+    // 静态产品已经有 knowledge 但可能还没合并后端富字段——backendId 有就拉一次（best-effort）
+    if (existing.meta && existing.meta.backendId) {
+      loadServerKpsInto(existing).then(() => {
+        if (_activeProductId === existing.id) applyWindowData(existing);
+      });
+    }
+    return existing;
+  }
   if (!REMOTE_PRODUCT_IDS.has(productId) && !existing) {
     console.warn('[productCatalog] unknown product:', productId);
     return null;
@@ -182,6 +363,8 @@ export async function ensureProductLoaded(productId) {
     script: data.script || [],
   });
   PRODUCTS[productId] = p;
+  // 合并服务端 approved KP 富字段（best-effort，失败不影响主流程）
+  await loadServerKpsInto(p);
   return p;
 }
 
@@ -196,6 +379,10 @@ export async function setActiveProduct(productId) {
   }
   _activeProductId = productId;
   applyWindowData(p);
+  // 已 cache 的 product 也尝试刷一次服务端 KP（拿到最新 enrich 结果）
+  if (p.meta && p.meta.backendId) {
+    loadServerKpsInto(p).then(() => applyWindowData(p));
+  }
   return p;
 }
 
@@ -206,3 +393,11 @@ export function getActiveProduct() { return _activeProductId ? PRODUCTS[_activeP
 // 不走 setActiveProduct（已改 async）以保证模块加载时立即可用。
 _activeProductId = 'zeekr007';
 applyWindowData(PRODUCTS.zeekr007);
+
+// HMR：模块热更新后重新拉一次远端元数据（coverImage / backendId），
+// 避免开发时 Vite 重建模块导致封面丢失。
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    loadRemoteProducts().catch(() => {});
+  });
+}

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     milvus_uri: str = "http://127.0.0.1:19530"
     milvus_collection: str = "kb_chunks"
+    milvus_kp_collection: str = "kp_embeddings"
     milvus_dim: int = 1024
 
     # Embedding provider: "siliconflow" | "zhipu" | "dashscope" | "openai_compat"
@@ -45,11 +46,21 @@ class Settings(BaseSettings):
     kp_extract_model: str = ""  # 空则复用 model_name
     kp_extract_batch_size: int = 8
     kp_dedupe_threshold: float = 0.85
+    # 单次 LLM 调用的读超时（秒）。批次大、要求枚举完整时容易跑长。
+    kp_llm_timeout: int = 180
+    # 单批超时时自动二分降级的最大递归深度（8 → 4 → 2 → 1）
+    kp_batch_split_depth: int = 3
 
     # Planner（共指消解 + 多 query 扩写）
     planner_model: str = ""            # 空则用 model_name；生产推荐 fast 档（如 deepseek-chat-lite）
     planner_timeout_ms: int = 1500     # Planner LLM 单次硬超时；超时降级为原句单 query
     planner_variants: int = 2          # 期望生成的语义变体数（不含 rewritten_query 本身）
+
+    # Verifier reflection（KP 覆盖检查 + 反思重检索）
+    verifier_reflection_enabled: bool = True
+    verifier_core_kp_min_rerank: float = 0.4     # 低于此 rerank 分的 core KP 不算"该覆盖却没覆盖"
+    verifier_reflection_max_kp_chunks: int = 6   # reflection 每次额外拉的 chunk 上限
+    verifier_reflection_per_kp_chunks: int = 2   # 每个 missed KP 最多带几条支持 chunk
 
     # 经验回答（KB 未命中时基于产品 features_brief + 行业常识兜底）
     experience_answer_enabled: bool = True    # 全局开关
@@ -58,13 +69,18 @@ class Settings(BaseSettings):
     # rerank top1 分数低于此阈值，视作 KB 检索"未命中"，走经验分支。
     # bge-reranker-v2-m3 sigmoid 分数：>0.5 通常强相关；0.2-0.5 边缘相关；<0.2 几乎无关。
     experience_rerank_score_threshold: float = 0.2
-    # 经验模式下"最接近的相关材料"展示阈值：rerank top1 score 低于此值则不展示
-    # （避免给学员看几乎完全无关的材料）
-    experience_closest_match_min_score: float = 0.05
+    # 经验模式下"最接近的相关材料"展示下限：默认 0.0 = 只要 rerank/cosine 出了有限正值就展示。
+    # 设计意图是诚实告诉学员"系统找到的最接近的就这条"，分数低本身就是有价值的信号
+    # （让学员看到 KB 真的没货）。如果想隐藏极低分数的材料可以调高。
+    experience_closest_match_min_score: float = 0.0
 
     # 内部 API 鉴权（最小方案）：所有 /api/* 写入接口与 KB 检索都要求 X-Internal-Token 头
     # 留空时表示"开发模式不校验"，生产必须设置
     internal_token: str = ""
+
+    # 考核分享链接的前端 base URL（拼到 token 前）。例如 https://learn.simugo.app
+    # 留空则只返回 ?token=xxx 路径片段，admin 端可自行拼当前域。
+    assessment_share_base_url: str = ""
 
     @property
     def origins_list(self) -> list[str]:

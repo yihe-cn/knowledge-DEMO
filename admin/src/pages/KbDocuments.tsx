@@ -249,8 +249,42 @@ function DocDetailModal({
           {doc.data.error && <div style={{ color: 'red', marginTop: 8 }}>错误：{doc.data.error}</div>}
           {doc.data.latest_job && (
             <div style={{ marginTop: 8 }}>
-              最近抽取：状态 {doc.data.latest_job.status} · 候选 {doc.data.latest_job.candidate_count} · 新 KP{' '}
-              {doc.data.latest_job.new_kp_count}
+              <Space wrap>
+                <span>最近抽取：</span>
+                <Tag
+                  color={
+                    doc.data.latest_job.status === 'done'
+                      ? 'green'
+                      : doc.data.latest_job.status === 'partial'
+                      ? 'orange'
+                      : doc.data.latest_job.status === 'failed'
+                      ? 'red'
+                      : 'default'
+                  }
+                >
+                  {doc.data.latest_job.status}
+                </Tag>
+                <span>候选 {doc.data.latest_job.candidate_count}</span>
+                <span>新 KP {doc.data.latest_job.new_kp_count}</span>
+              </Space>
+              {doc.data.latest_job.error && (
+                <div
+                  style={{
+                    marginTop: 6,
+                    padding: '6px 10px',
+                    background: doc.data.latest_job.status === 'partial' ? '#fffbe6' : '#fff1f0',
+                    border:
+                      '1px solid ' +
+                      (doc.data.latest_job.status === 'partial' ? '#ffe58f' : '#ffa39e'),
+                    borderRadius: 4,
+                    fontSize: 12,
+                    color: '#7a4a00',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  抽取错误：{doc.data.latest_job.error}
+                </div>
+              )}
             </div>
           )}
           <div style={{ marginTop: 12, padding: 8, background: '#fafafa', borderRadius: 4 }}>

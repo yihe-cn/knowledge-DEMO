@@ -38,3 +38,15 @@ def extract_kps_task(doc_id: int) -> dict:
     from .kp_extraction.extractor import extract_kps_sync
 
     return extract_kps_sync(doc_id)
+
+
+@celery_app.task(bind=True, name="simugo.reindex_kps_batch")
+def reindex_kps_batch_task(self, kp_ids: list[int] | None = None, reenrich: bool = False) -> dict:
+    """批量回填 KP 召回索引。kp_ids=None 时默认所有 status=approved KP；
+    reenrich=True 时每个 KP 先调 LLM 重新生成 trigger_questions/aliases/scenario 再 reindex。"""
+    from .kp_extraction.kp_indexer import reindex_kps_batch_sync
+
+    def _progress(meta: dict) -> None:
+        self.update_state(state="PROGRESS", meta=meta)
+
+    return reindex_kps_batch_sync(kp_ids, reenrich=reenrich, progress_callback=_progress)

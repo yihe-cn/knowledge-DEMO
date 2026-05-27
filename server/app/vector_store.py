@@ -1,9 +1,14 @@
-"""Milvus 集合封装。仅用于 `kb_chunks` 一个集合。
+"""Milvus 集合封装。包含两个并列 collection：
 
-字段：
+`kb_chunks` — 文档切片向量
 - chunk_id (INT64, primary)：与 MySQL kb_chunk.id 一一对应
 - doc_id (INT64)
 - kp_ids (ARRAY<INT64>)：先空，KP 抽取/审批后回写
+- vector (FLOAT_VECTOR, dim=settings.milvus_dim)
+
+`kp_embeddings` — KP 自身向量（提升 query → KP 的语义召回）
+- kp_id (INT64, primary)：与 MySQL kp_registry.id 一一对应
+- status (INT8)：1=approved, 0=draft/archived；过滤用
 - vector (FLOAT_VECTOR, dim=settings.milvus_dim)
 """
 from __future__ import annotations
@@ -163,6 +168,74 @@ def delete_by_doc(doc_id: int) -> None:
     coll = get_collection()
     coll.delete(expr=f"doc_id == {int(doc_id)}")
     coll.flush()
+
+
+# ── KP 向量集合（与 kb_chunks 并列）────────────────────────────────────
+def _build_kp_schema() -> CollectionSchema:
+    return CollectionSchema(
+        fields=[
+            FieldSchema(name="kp_id", dtype=DataType.INT64, is_primary=True, auto_id=False),
+            FieldSchema(name="status", dtype=DataType.INT8),
+            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=settings.milvus_dim),
+        ],
+        description="SIMUGO KP enrichment embeddings",
+        enable_dynamic_field=False,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_kp_collection() -> Collection:
+    _ensure_connection()
+    name = settings.milvus_kp_collection
+    if not utility.has_collection(name):
+        coll = Collection(name=name, schema=_build_kp_schema())
+        coll.create_index(
+            field_name="vector",
+            index_params={
+                "index_type": "HNSW",
+                "metric_type": "COSINE",
+                "params": {"M": 16, "efConstruction": 200},
+            },
+        )
+    else:
+        coll = Collection(name=name)
+    coll.load()
+    return coll
+
+
+def upsert_kp_embedding(kp_id: int, status: int, vector: list[float]) -> None:
+    """单个 KP 行 upsert。status: 1=approved, 0=其他。"""
+    coll = get_kp_collection()
+    coll.upsert([[int(kp_id)], [int(status)], [vector]])
+    coll.flush()
+
+
+def delete_kp_embedding(kp_id: int) -> None:
+    coll = get_kp_collection()
+    coll.delete(expr=f"kp_id == {int(kp_id)}")
+    coll.flush()
+
+
+def search_kps(
+    query_vector: list[float],
+    top_k: int = 10,
+    approved_only: bool = True,
+) -> list[dict]:
+    """根据 query 检索 KP 自身。返回 [{kp_id, score}]。"""
+    coll = get_kp_collection()
+    expr = "status == 1" if approved_only else None
+    res = coll.search(
+        data=[query_vector],
+        anns_field="vector",
+        param={"metric_type": "COSINE", "params": {"ef": 64}},
+        limit=top_k,
+        expr=expr,
+        output_fields=["status"],
+    )
+    out: list[dict] = []
+    for hit in res[0]:
+        out.append({"kp_id": int(hit.id), "score": float(hit.distance)})
+    return out
 
 
 class MilvusChunkMissing(LookupError):

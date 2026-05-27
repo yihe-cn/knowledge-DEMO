@@ -3,28 +3,11 @@
 // 选择课程卡片 → 进入该产品的"学练评"主页（home）
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Icon } from '../components/Primitives.jsx';
-import { ACCOUNTS, ACCOUNT_INDEX, PRODUCTS, REMOTE_PRODUCT_IDS } from '../productCatalog.js';
+import { Card, Icon } from '../components/Primitives.jsx';
+import { neuInset, neuRaised } from '../theme.js';
+import { ACCOUNTS, PRODUCTS, getAccount, getVisibleProductIds } from '../productCatalog.js';
 import { getProductBrand } from '../productBrands.js';
-
-// 本屏专用的轻量卡片包装 — 不复用全局 Card（neuRaised 阴影偏厚），
-// 也不污染 Primitives，避免其他屏体感被改。
-function SoftCard({ t, style, onClick, children }) {
-  return (
-    <div
-      onClick={onClick}
-      style={{
-        background: t.surface,
-        borderRadius: 18,
-        border: `1px solid ${t.line}`,
-        boxShadow: `0 1px 2px ${t.sDark}30, 0 12px 28px -16px ${t.sDark}`,
-        cursor: onClick ? 'pointer' : 'default',
-        transition: 'transform .15s ease, box-shadow .15s ease',
-        ...style,
-      }}
-    >{children}</div>
-  );
-}
+import { listByAccount } from '../lib/assessmentClient.js';
 
 function emptyProgress() {
   return { learnedPoints: new Set(), practiced: false, reportReady: false, picks: [], finalMood: null };
@@ -83,8 +66,8 @@ function pickRecommended(ids, progressByProduct) {
   return ranked[0] || null;
 }
 
-function AccountHome({ t, accountId, switchAccount, switchProduct, progressByProduct }) {
-  const account = ACCOUNT_INDEX[accountId] || ACCOUNTS[0];
+function AccountHome({ t, accountId, switchAccount, switchProduct, progressByProduct, go }) {
+  const account = getAccount(accountId);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -96,11 +79,7 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
 
-  // 账号自带的静态产品在前，后端动态产品（admin 新建）追加在后
-  const visibleIds = [
-    ...account.productIds,
-    ...Array.from(REMOTE_PRODUCT_IDS).filter(id => !account.productIds.includes(id)),
-  ];
+  const visibleIds = getVisibleProductIds(account);
 
   const recommended = pickRecommended(visibleIds, progressByProduct);
 
@@ -125,6 +104,8 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
           onClick={() => switchProduct(recommended.id)}
         />
       )}
+
+      <MyAssessmentsSection t={t} accountId={account.id} go={go} />
 
       <div>
         <div style={{
@@ -277,10 +258,106 @@ function Avatar({ t, account, size = 40 }) {
   );
 }
 
+// ─── 三步节点进度条（学/练/评）──────────────────────────────────────
+function ThreeStepTrack({ t, brand, stage }) {
+  const learnDone = !['idle', 'learning'].includes(stage);
+  const practiceDone = ['await-report', 'done'].includes(stage);
+  const reportDone = stage === 'done';
+  const steps = [
+    { label: '学', done: learnDone },
+    { label: '练', done: practiceDone },
+    { label: '评', done: reportDone },
+  ];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginTop: 14 }}>
+      {steps.map((s, i) => (
+        <React.Fragment key={s.label}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <div style={{
+              width: 22, height: 22, borderRadius: 999,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, fontWeight: 700,
+              background: s.done ? brand.accent : 'transparent',
+              color: s.done ? brand.onAccent : t.textMute,
+              border: s.done ? 'none' : `1.5px solid ${t.line}`,
+              transition: 'all .3s ease',
+            }}>
+              {s.done ? '✓' : i + 1}
+            </div>
+            <div style={{
+              fontSize: 10, fontWeight: s.done ? 700 : 400,
+              color: s.done ? brand.accent : t.textMute,
+            }}>{s.label}</div>
+          </div>
+          {i < steps.length - 1 && (
+            <div style={{
+              flex: 1, height: 2, marginBottom: 14,
+              background: steps[i + 1].done || s.done ? brand.accent : t.line,
+              transition: 'background .3s ease',
+            }} />
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ─── 课程封面：有图用图，无图用品牌渐变 CSS 封面 ───────────────────────
+function CourseCover({ product, brand, height }) {
+  const [imgError, setImgError] = React.useState(false);
+  const coverUrl = product.meta?.coverImage;
+  const showImg = coverUrl && !imgError;
+  const decorText = product.meta?.shortName || (product.meta?.name || '').slice(0, 3) || '';
+
+  if (showImg) {
+    return (
+      <img
+        src={coverUrl}
+        onError={() => setImgError(true)}
+        alt={product.meta?.name}
+        style={{ width: '100%', height, objectFit: 'cover', display: 'block' }}
+      />
+    );
+  }
+
+  return (
+    <div style={{
+      width: '100%', height,
+      background: `linear-gradient(135deg, ${brand.accent} 0%, ${brand.accentSoft} 100%)`,
+      position: 'relative', overflow: 'hidden',
+    }}>
+      {/* 右下角装饰大字 */}
+      <div style={{
+        position: 'absolute', right: -6, bottom: -14,
+        fontSize: height * 0.75, fontWeight: 900, color: '#fff',
+        opacity: 0.13, lineHeight: 1, letterSpacing: '-0.03em',
+        userSelect: 'none', pointerEvents: 'none',
+      }}>{decorText}</div>
+      {/* 左下角：行业标签 + 课程名 */}
+      <div style={{
+        position: 'absolute', bottom: 14, left: 16,
+        display: 'flex', flexDirection: 'column', gap: 4,
+      }}>
+        {product.meta?.industry && (
+          <div style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
+            color: 'rgba(255,255,255,0.7)',
+            textTransform: 'uppercase',
+          }}>{product.meta.industry}</div>
+        )}
+        <div style={{
+          fontSize: 20, fontWeight: 800, color: '#fff',
+          letterSpacing: '-0.01em', textShadow: '0 1px 6px rgba(0,0,0,0.18)',
+        }}>{product.meta?.name || product.id}</div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Hero：今日推荐 ─────────────────────────────────────────────────
 function HeroCard({ t, product, desc, onClick }) {
   const brand = getProductBrand(product.id, product.meta);
-  const icon = product.meta?.industryIcon || brand.icon;
+  const hasCover = !!product.meta?.coverImage;
 
   return (
     <div
@@ -288,134 +365,92 @@ function HeroCard({ t, product, desc, onClick }) {
       style={{
         position: 'relative',
         borderRadius: 22,
-        padding: '20px 20px 18px',
-        background: brand.tint,
-        border: `1px solid ${brand.accent}22`,
-        boxShadow: `0 1px 2px ${t.sDark}30, 0 18px 42px -22px ${brand.accent}55`,
+        background: t.surface,
+        boxShadow: `4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, 0 18px 42px -22px ${brand.accent}55`,
         cursor: 'pointer',
         overflow: 'hidden',
       }}
     >
-      {/* 装饰圆 */}
-      <div style={{
-        position: 'absolute', right: -40, top: -40, width: 160, height: 160, borderRadius: '50%',
-        background: `radial-gradient(circle, ${brand.accent}22 0%, transparent 70%)`,
-        pointerEvents: 'none',
-      }} />
+      {/* 封面区：图片叠加芯片 + 底部渐变 */}
+      <div style={{ position: 'relative' }}>
+        <CourseCover product={product} brand={brand} height={hasCover ? 160 : 130} />
 
-      <div style={{
-        position: 'relative',
-        fontSize: 10, color: brand.accent, fontWeight: 800, letterSpacing: '0.16em',
-      }}>今日推荐 · {desc.stage === 'idle' ? '从这里开始' : '继续上次'}</div>
-
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14, marginTop: 12 }}>
+        {/* "今日推荐"芯片浮在封面左上角 */}
         <div style={{
-          width: 56, height: 56, borderRadius: 16,
-          background: brand.accent, color: brand.onAccent,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 26,
-          flexShrink: 0,
-          boxShadow: `0 6px 14px -4px ${brand.accent}66, inset 0 1px 0 rgba(255,255,255,0.22)`,
-        }}>{icon}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: t.text, letterSpacing: '-0.005em' }}>
-            {product.meta?.name || product.id}
-          </div>
-          <div style={{ fontSize: 12.5, color: t.textSoft, marginTop: 4 }}>
-            {stageLabel(desc)}
-          </div>
+          position: 'absolute', top: 12, left: 14,
+          padding: '4px 10px',
+          borderRadius: 20,
+          background: hasCover ? 'rgba(0,0,0,0.30)' : `${brand.accent}22`,
+          backdropFilter: hasCover ? 'blur(6px)' : 'none',
+          fontSize: 10,
+          color: hasCover ? 'rgba(255,255,255,0.92)' : brand.accent,
+          fontWeight: 800, letterSpacing: '0.14em',
+        }}>
+          今日推荐 · {desc.stage === 'idle' ? '从这里开始' : '继续上次'}
         </div>
+
+        {/* 真实图片时底部加渐变淡出，消除图文硬切 */}
+        {hasCover && (
+          <div style={{
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            height: 52,
+            background: `linear-gradient(to bottom, transparent, ${t.surface})`,
+            pointerEvents: 'none',
+          }} />
+        )}
       </div>
 
-      {desc.total > 0 && (
-        <div style={{
-          position: 'relative',
-          marginTop: 14,
-          height: 4,
-          background: `${brand.accent}1a`,
-          borderRadius: 999,
-          overflow: 'hidden',
-        }}>
-          <div style={{
-            height: '100%',
-            width: `${Math.max(desc.learnPct * 100, desc.stage === 'idle' ? 0 : 4)}%`,
-            background: `linear-gradient(90deg, ${brand.accent}, ${brand.accentSoft})`,
-            transition: 'width .4s ease',
-          }} />
+      {/* 底部信息区 */}
+      <div style={{ padding: `${hasCover ? 2 : 14}px 16px 16px` }}>
+        <div style={{ fontSize: 12.5, color: t.textSoft }}>
+          {stageLabel(desc)}
         </div>
-      )}
 
-      <div style={{
-        position: 'relative',
-        marginTop: 16,
-        display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
-        color: brand.accent, fontSize: 13.5, fontWeight: 700,
-      }}>
-        {stageCTA(desc)}
-        <Icon name="arrow" size={16} color={brand.accent} stroke={2.2} />
+        <ThreeStepTrack t={t} brand={brand} stage={desc.stage} />
+
+        <div style={{
+          marginTop: 12,
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
+          color: brand.accent, fontSize: 13.5, fontWeight: 700,
+        }}>
+          {stageCTA(desc)}
+          <Icon name="arrow" size={16} color={brand.accent} stroke={2.2} />
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── 课程卡：brand 色驱动 ─────────────────────────────────────────────
+// ─── 课程卡：品牌封面 + 进度 ─────────────────────────────────────────
 function ProductCard({ t, product, progress, isRecommended, onClick }) {
   const brand = getProductBrand(product.id, product.meta);
-  const icon = product.meta?.industryIcon || brand.icon;
   const desc = describeStage(product, progress);
 
   return (
-    <SoftCard t={t} onClick={onClick} style={{
-      padding: 16,
-      // 当前推荐项淡淡描边，但 hero 已经更显眼，这里只留一抹
-      ...(isRecommended ? { borderColor: `${brand.accent}55` } : {}),
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-        <div style={{
-          width: 48, height: 48, borderRadius: 14,
-          background: brand.accent,
-          color: brand.onAccent,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 22,
-          flexShrink: 0,
-          boxShadow: `0 4px 10px -3px ${brand.accent}55, inset 0 1px 0 rgba(255,255,255,0.18)`,
-        }}>{icon}</div>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 15.5, fontWeight: 700, color: t.text, letterSpacing: '-0.005em' }}>
-              {product.meta?.name || product.id}
-            </div>
-            {product.meta?.industry && (
-              <div style={{
-                fontSize: 10, fontWeight: 700,
-                letterSpacing: '0.08em',
-                padding: '2px 7px', borderRadius: 4,
-                background: brand.tint,
-                color: brand.accent,
-              }}>{product.meta.industry}</div>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: t.textSoft, marginTop: 4 }}>{stageLabel(desc)}</div>
-        </div>
-
-        <Icon name="arrow" size={16} color={t.textMute} />
-      </div>
-
-      <div style={{
-        marginTop: 12, height: 3,
-        background: `${brand.accent}14`,
-        borderRadius: 999,
+    <div
+      onClick={onClick}
+      style={{
+        borderRadius: 22,
         overflow: 'hidden',
-      }}>
-        <div style={{
-          height: '100%',
-          width: `${desc.learnPct * 100}%`,
-          background: `linear-gradient(90deg, ${brand.accent}, ${brand.accentSoft})`,
-          transition: 'width .4s ease',
-        }} />
+        cursor: 'pointer',
+        boxShadow: isRecommended
+          ? `4px 4px 12px ${t.sDark}, -3px -3px 8px ${t.sLight}, 0 0 0 2px ${brand.accent}88 inset`
+          : `3px 3px 8px ${t.sDark}, -2px -2px 6px ${t.sLight}`,
+        background: t.surface,
+      }}
+    >
+      {/* 封面 */}
+      <CourseCover product={product} brand={brand} height={110} />
+
+      {/* 信息区 */}
+      <div style={{ padding: '12px 16px 14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div style={{ fontSize: 12, color: t.textSoft }}>{stageLabel(desc)}</div>
+          <Icon name="arrow" size={15} color={t.textMute} />
+        </div>
+        <ThreeStepTrack t={t} brand={brand} stage={desc.stage} />
       </div>
-    </SoftCard>
+    </div>
   );
 }
 
@@ -436,6 +471,162 @@ function PlaceholderCard({ t }) {
       }}>+</div>
       <div style={{ fontSize: 12.5, fontWeight: 600 }}>更多行业场景陆续接入</div>
     </div>
+  );
+}
+
+// ─── 我的考核任务（跨产品）─────────────────────────────────────────────
+// 按 status 排序：pending / in_progress 在前，终态任务收纳到历史区。
+// 空列表整段不显示，避免空状态噪音。
+const STATUS_ORDER = { pending: 0, in_progress: 1, submitted: 2, graded: 3, stopped: 4 };
+const STATUS_LABEL = {
+  pending: '待开始',
+  in_progress: '进行中',
+  submitted: '已提交 · 待评',
+  graded: '已完成',
+  stopped: '已停止',
+};
+const ARCHIVED_ASSESSMENT_STATUSES = new Set(['graded', 'stopped']);
+
+function isArchivedAssessment(item) {
+  return ARCHIVED_ASSESSMENT_STATUSES.has(item.status);
+}
+
+function MyAssessmentsSection({ t, accountId, go }) {
+  const [items, setItems] = useState(null); // null=未加载, [] = 加载完空
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    listByAccount(accountId)
+      .then(list => { if (alive) setItems(list); })
+      .catch(() => { if (alive) setItems([]); });
+    return () => { alive = false; };
+  }, [accountId]);
+
+  if (!items || items.length === 0) return null;
+
+  const sorted = [...items].sort((a, b) =>
+    (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+  );
+  const activeItems = sorted.filter(it => !isArchivedAssessment(it));
+  const archivedItems = sorted.filter(isArchivedAssessment);
+  const archivedDone = archivedItems.filter(it => it.status === 'graded').length;
+  const archivedStopped = archivedItems.filter(it => it.status === 'stopped').length;
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+        padding: '0 2px 10px',
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: '0.01em' }}>
+          我的考核任务
+        </div>
+        <div style={{ fontSize: 11, color: t.textMute, letterSpacing: '0.08em', fontWeight: 600 }}>
+          {activeItems.length} 待处理
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {activeItems.map(it => (
+          <AssessmentRow key={it.assignment_id} t={t} item={it} onOpen={() => go && go('assessment', { token: it.token })} />
+        ))}
+        {archivedItems.length > 0 && (
+          <div>
+            <Card
+              t={t}
+              onClick={() => setHistoryOpen(v => !v)}
+              style={{ padding: '12px 14px', opacity: 0.9 }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: t.text }}>已收纳考核</div>
+                  <div style={{ fontSize: 11.5, color: t.textMute, marginTop: 3 }}>
+                    {archivedItems.length} 份
+                    {archivedDone > 0 && ` · 已完成 ${archivedDone}`}
+                    {archivedStopped > 0 && ` · 已停止 ${archivedStopped}`}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11.5, color: t.textMute, fontWeight: 700 }}>
+                  {historyOpen ? '收起' : '展开'}
+                </div>
+              </div>
+            </Card>
+            {historyOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                {archivedItems.map(it => (
+                  <AssessmentRow
+                    key={it.assignment_id}
+                    t={t}
+                    item={it}
+                    archived
+                    onOpen={() => go && go('assessment', { token: it.token })}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssessmentRow({ t, item, onOpen, archived = false }) {
+  const { template, status, score } = item;
+  const isGraded = status === 'graded';
+  const isStopped = status === 'stopped';
+  const isOral = template.mode === 'ai_oral';
+  const accent = isGraded
+    ? (score != null && score >= template.pass_score ? '#2a8a3e' : '#a4571f')
+    : isStopped
+      ? t.textMute
+    : t.accent;
+
+  return (
+    <Card t={t} onClick={onOpen} style={{ padding: archived ? 12 : 14, opacity: archived ? 0.82 : 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          width: archived ? 34 : 42, height: archived ? 34 : 42, borderRadius: archived ? 10 : 12,
+          background: accent, color: '#fff',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: archived ? 15 : 18, flexShrink: 0,
+          boxShadow: `0 4px 10px -3px ${accent}55, inset 0 1px 0 rgba(255,255,255,0.18)`,
+        }}>
+          {isOral ? '面' : '题'}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: t.text }}>{template.title}</div>
+            <div style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+              padding: '2px 7px', borderRadius: 4,
+              background: `${accent}14`, color: accent,
+            }}>
+              {isOral ? 'AI 主考' : '题库'}
+            </div>
+            {archived && (
+              <div style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+                padding: '2px 7px', borderRadius: 4,
+                background: `${accent}18`, color: accent,
+              }}>
+                {STATUS_LABEL[status] || status}
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: t.textSoft, marginTop: 4 }}>
+            {STATUS_LABEL[status] || status}
+            {' · '}{isOral ? `约 ${template.num_questions} 轮` : `${template.num_questions} 题`}
+            {isGraded && score != null && ` · 得分 ${score.toFixed(1)} / 及格 ${template.pass_score}`}
+          </div>
+          {isOral && !isGraded && !isStopped && (
+            <div style={{ fontSize: 11.5, color: t.textMute, marginTop: 5, lineHeight: 1.4 }}>
+              AI 逐轮提问 · 每轮即时评分 · 交卷后生成综合评价
+            </div>
+          )}
+        </div>
+        {!archived && <Icon name="arrow" size={16} color={t.textMute} />}
+      </div>
+    </Card>
   );
 }
 

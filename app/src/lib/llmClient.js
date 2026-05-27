@@ -48,9 +48,10 @@ export function evaluatePractice(body, signal) {
  * @param {(items:string[])=>void} [opts.onFollowups] - 异步追问事件，在 result 之后到达
  * @param {(data:{node:string,duration_ms:number,status:string})=>void} [opts.onStage] - 流水线节点完成事件，用于展示进度
  * @param {(mode:string)=>void} [opts.onAnswerMode] - 后端选定回答模式 'kb' | 'experience'
+ * @param {(data:{reason:string,missed_kps:Array<{kp_id:number,name:string}>})=>void} [opts.onRevising] - Verifier 触发反思重检索时，前端应清空当前 token 缓冲并展示 banner
  * @param {AbortSignal}         [opts.signal]
  */
-export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, onCitations, onTaggedKps, onFallback, onFollowups, onStage, onAnswerMode, signal }) {
+export async function streamChat({ endpoint, body, onToken, onResult, onError, onDone, onCitations, onTaggedKps, onFallback, onFollowups, onStage, onAnswerMode, onRevising, signal }) {
   let resp;
   try {
     const headers = { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' };
@@ -110,6 +111,8 @@ export async function streamChat({ endpoint, body, onToken, onResult, onError, o
     } else if (event === 'answer_mode') {
       const mode = (data && typeof data === 'object') ? data.mode : data;
       if (mode) onAnswerMode && onAnswerMode(mode);
+    } else if (event === 'revising') {
+      onRevising && onRevising(data || {});
     } else if (event === 'error') {
       const msg = (data && data.message) || String(data) || 'unknown error';
       onError && onError(new Error(msg));

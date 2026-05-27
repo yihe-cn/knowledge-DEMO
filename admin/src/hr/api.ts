@@ -1,5 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listKps, getKp, listKpChunks, approveKp, type Kp } from '../api/kp';
+import {
+  listKps, getKp, listKpChunks, approveKp, createKp, patchKp, deleteKp,
+  bulkDeleteKps, bulkArchiveKps, bulkApprove,
+  type Kp,
+} from '../api/kp';
 import { getDocument, listDocuments, listDocChunks, reextract, uploadDocument } from '../api/kb';
 import { getOverview, getAttention } from '../api/dashboard';
 import { useActiveProduct } from '../context/ActiveProduct';
@@ -173,5 +177,72 @@ export function useApproveItem() {
       qc.invalidateQueries({ queryKey: ['hr', 'overview'] });
       qc.invalidateQueries({ queryKey: ['hr', 'attention'] });
     },
+  });
+}
+
+export function useCreateItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; definition: string; category?: string }) => createKp(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['hr', 'items'] });
+      qc.invalidateQueries({ queryKey: ['hr', 'overview'] });
+      qc.invalidateQueries({ queryKey: ['kps'] });
+    },
+  });
+}
+
+export function useArchiveItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => patchKp(id, { status: 'archived' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['hr', 'items'] });
+      qc.invalidateQueries({ queryKey: ['hr', 'overview'] });
+      qc.invalidateQueries({ queryKey: ['kps'] });
+    },
+  });
+}
+
+export function useDeleteItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => deleteKp(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['hr', 'items'] });
+      qc.invalidateQueries({ queryKey: ['hr', 'overview'] });
+      qc.invalidateQueries({ queryKey: ['kps'] });
+    },
+  });
+}
+
+function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['hr', 'items'] });
+  qc.invalidateQueries({ queryKey: ['hr', 'overview'] });
+  qc.invalidateQueries({ queryKey: ['hr', 'attention'] });
+  qc.invalidateQueries({ queryKey: ['kps'] });
+}
+
+export function useBulkDeleteItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) => bulkDeleteKps(ids),
+    onSuccess: () => invalidateAll(qc),
+  });
+}
+
+export function useBulkArchiveItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) => bulkArchiveKps(ids),
+    onSuccess: () => invalidateAll(qc),
+  });
+}
+
+export function useBulkApproveItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) => bulkApprove(ids),
+    onSuccess: () => invalidateAll(qc),
   });
 }

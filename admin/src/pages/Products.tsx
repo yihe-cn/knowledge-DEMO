@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -16,7 +16,7 @@ import {
   message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createProduct, listProducts, patchProduct, type Product } from '../api/product';
+import { createProduct, listProducts, patchProduct, uploadProductCover, type Product } from '../api/product';
 import {
   deleteRole,
   generateRoles,
@@ -159,6 +159,9 @@ function ProductFormModal({
 }) {
   const [form] = Form.useForm();
   const isEdit = !!product;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
 
   const save = useMutation({
     mutationFn: async (vals: any) => {
@@ -224,12 +227,76 @@ function ProductFormModal({
         </Form.Item>
       </Form>
 
+      {isEdit && product && (
+        <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+          <div style={{ marginBottom: 8, fontWeight: 500 }}>产品封面</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+            <div
+              style={{
+                width: 120,
+                height: 80,
+                borderRadius: 6,
+                overflow: 'hidden',
+                border: '1px dashed #d9d9d9',
+                background: '#fafafa',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              {coverPreview || product.cover_image_url ? (
+                <img
+                  src={coverPreview || `http://localhost:8000${product.cover_image_url}`}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  alt="封面预览"
+                />
+              ) : (
+                <span style={{ color: '#bbb', fontSize: 12 }}>暂无封面</span>
+              )}
+            </div>
+            <div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setCoverUploading(true);
+                  try {
+                    const result = await uploadProductCover(product.id, file);
+                    setCoverPreview(result.url);
+                    message.success('封面上传成功');
+                  } catch (err: any) {
+                    message.error(err?.response?.data?.detail || '上传失败');
+                  } finally {
+                    setCoverUploading(false);
+                    e.target.value = '';
+                  }
+                }}
+              />
+              <Button
+                loading={coverUploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {product.cover_image_url || coverPreview ? '替换封面' : '上传封面'}
+              </Button>
+              <div style={{ marginTop: 6, fontSize: 12, color: '#999' }}>
+                支持 jpg / png / webp，建议 16:9，上传后立即生效
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isEdit && product && <RolesSection productId={product.id} />}
     </Modal>
   );
 }
 
-function RolesSection({ productId }: { productId: number }) {
+export function RolesSection({ productId }: { productId: number }) {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ['practice-roles', productId],

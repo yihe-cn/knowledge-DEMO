@@ -20,7 +20,7 @@ function ProductPicker() {
       }}
       title="当前操作的归属产品"
     >
-      <option value="">{loading ? '加载中…' : '选择归属产品'}</option>
+      <option value="">{loading ? '加载中…' : '选择课程'}</option>
       {products.map((p) => (
         <option key={p.id} value={p.id}>{p.name}（{p.code}）</option>
       ))}
@@ -52,6 +52,8 @@ export function Sidebar({
   return (
     <aside className="side">
       <Item id="overview" path="/hr"           icon={<I.Home />}    label="工作台" />
+      <div className="side-section-label">课程运营</div>
+      <Item id="courses"  path="/hr/courses"   icon={<I.Layers />}  label="课程管理" />
       <div className="side-section-label">知识维护</div>
       <Item id="library"  path="/hr/library"   icon={<I.Book />}    label="知识条目" count={counts.items} />
       <Item id="docs"     path="/hr/docs"      icon={<I.Doc />}     label="源文件库" count={counts.docs} />
@@ -60,6 +62,10 @@ export function Sidebar({
       <Item id="review"   path="/hr/review"    icon={<I.Inbox />}   label="审核工作台" count={counts.review} />
       <Item id="insights" path="/hr/insights"  icon={<I.Sparkle />} label="问答洞察" />
       <Item id="audit"    path="/hr/audit"     icon={<I.History />} label="变更与审计" />
+      <div className="side-section-label">考核管理</div>
+      <Item id="assessments" path="/hr/assessments"             icon={<I.Check />}    label="考核模板" />
+      <Item id="assignments" path="/hr/assessments/assignments" icon={<I.Calendar />} label="任务分派" />
+      <Item id="stats"       path="/hr/assessments/stats"       icon={<I.Eye />}      label="结果统计" />
       <div className="side-section-label">设置</div>
       <Item id="depts"    path="/hr/depts"     icon={<I.People />}  label="组织与成员" />
       <Item id="config"   path="/hr/config"    icon={<I.Gear />}    label="系统配置" />
@@ -74,6 +80,7 @@ export function Sidebar({
 
 export function Topbar({ onOpenCmd }: { onOpenCmd: () => void }) {
   const qc = useQueryClient();
+  const nav = useNavigate();
   const configureToken = () => {
     const next = window.prompt('Internal Token（留空表示开发模式无 token）', getInternalToken());
     if (next == null) return;
@@ -108,7 +115,7 @@ export function Topbar({ onOpenCmd }: { onOpenCmd: () => void }) {
         <button className="btn ghost sm" onClick={configureToken} title="设置 Internal Token">
           <I.Gear /> Token
         </button>
-        <button className="btn sm"><I.Plus />新建条目</button>
+        <button className="btn sm" onClick={() => nav('/hr/library')}><I.Plus />新建条目</button>
         <UploadDocButton className="btn primary sm" />
         <div className="user-chip">
           <span className="avatar">陈</span>
