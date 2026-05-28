@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     milvus_kp_collection: str = "kp_embeddings"
     milvus_dim: int = 1024
 
+    # 用户上传文件根目录（产品封面、KB 文档原始件）。
+    # 留空时各 route 沿用旧默认 `server/uploads`；Docker 部署设为 /data/uploads 走持久卷。
+    uploads_dir: str = ""
+
     # Embedding provider: "siliconflow" | "zhipu" | "dashscope" | "openai_compat"
     embedding_provider: str = "siliconflow"
     embedding_model: str = "BAAI/bge-m3"

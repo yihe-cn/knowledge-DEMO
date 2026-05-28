@@ -46,6 +46,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MYSQL_DSN=sqlite+aiosqlite:////data/app.db \
     MYSQL_DSN_SYNC=sqlite:////data/app.db \
     FRONTEND_DIST=/app/frontend \
+    # 用户上传文件目录（封面、KB 原始件）也放到持久卷，避免容器重建丢图
+    UPLOADS_DIR=/data/uploads \
     ALLOW_ORIGINS=http://localhost:8000
 
 WORKDIR /app
@@ -68,6 +70,8 @@ COPY --from=admin /build/dist ./admin
 # 容器首次启动时 entrypoint 会把 /seed/ 拷到 /data/。
 # 注意：seed/ 不存在也不阻塞 build（COPY 空目录就行；CI 上可以选择不带 seed）
 COPY server/seed /seed
+# 产品封面图（KB 原始件 pdf/pptx 太大不入镜像，需要的话从 admin 再上传一遍）
+COPY server/uploads/products /seed/uploads/products
 
 # 启动脚本：负责种子注入 + exec CMD
 COPY server/scripts/entrypoint.sh /entrypoint.sh

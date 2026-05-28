@@ -140,7 +140,8 @@ app.include_router(practice.suggest_router, prefix="/api")
 app.include_router(quiz.router, prefix="/api")
 
 # 上传文件静态服务；必须在 SPA 根 mount 之前挂，否则会被 / 吞掉。
-_uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+# Docker 部署通过 UPLOADS_DIR=/data/uploads 把目录挪到持久卷，避免重建容器丢图。
+_uploads_dir = settings.uploads_dir or os.path.join(os.path.dirname(__file__), "..", "uploads")
 os.makedirs(_uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=_uploads_dir), name="uploads")
 

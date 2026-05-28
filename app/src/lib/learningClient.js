@@ -1,7 +1,9 @@
 // 学习闭环 API（swipe 卡片 + 逐 KP 闭卷答题 + AI 评分）。
 // 学员身份用 account.id 作为 external_ref 弱身份，与 /api/courses/by-account 一致。
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+// 用 ?? 而不是 ||：单镜像 demo 把 VITE_API_BASE 设成 ""，让 API 走同源相对路径；
+// || 会把空字符串当 falsy 落回 localhost:8000，导致浏览器跨域请求 404。
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 async function req(method, path, body) {
   const opts = {

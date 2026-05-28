@@ -28,7 +28,12 @@ from ..schemas import ProductCreate, ProductKpBindRequest, ProductPatch
 router = APIRouter()
 
 
-_COVER_UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "products")
+from ..config import settings as _settings  # noqa: E402
+
+_COVER_UPLOAD_DIR = os.path.join(
+    _settings.uploads_dir or os.path.join(os.path.dirname(__file__), "..", "..", "uploads"),
+    "products",
+)
 _ALLOWED_COVER_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 

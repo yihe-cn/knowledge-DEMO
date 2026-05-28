@@ -19,4 +19,13 @@ else
   echo "[entrypoint] /data already has app.db, skip seeding."
 fi
 
+# uploads 单独做一次：app.db 可能存在但 uploads 子目录还没建（比如老镜像升级）
+# 镜像里的 /seed/uploads 只有 products/ 子目录（封面图），KB 文档需要 admin 重新上传
+if [ -d "$SEED_DIR/uploads" ] && [ ! -d "$DATA_DIR/uploads" ]; then
+  echo "[entrypoint] seeding uploads from $SEED_DIR/uploads ..."
+  mkdir -p "$DATA_DIR/uploads"
+  cp -a "$SEED_DIR/uploads/." "$DATA_DIR/uploads/"
+  echo "[entrypoint] uploads seeded."
+fi
+
 exec "$@"

@@ -16,6 +16,8 @@
 Knowledge
 demo
 server/uploads
+# 产品封面图作为 demo seed 打进镜像（~5MB），KB 原始件（pdf/pptx）仍排除
+!server/uploads/products
 server/.venv
 server/uv.lock
 app/dist

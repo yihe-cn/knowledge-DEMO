@@ -34,7 +34,13 @@ from ..vector_store import delete_by_doc
 router = APIRouter()
 
 
-_UPLOAD_DIR = Path(__file__).resolve().parents[3] / "server" / "uploads"
+from ..config import settings as _settings  # noqa: E402
+
+_UPLOAD_DIR = (
+    Path(_settings.uploads_dir)
+    if _settings.uploads_dir
+    else Path(__file__).resolve().parents[3] / "server" / "uploads"
+)
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 _ALLOWED_EXT = {".pdf", ".pptx", ".md", ".txt"}

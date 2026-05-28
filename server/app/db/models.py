@@ -25,6 +25,12 @@ class Base(DeclarativeBase):
     pass
 
 
+# SQLite 的 autoincrement 只对 INTEGER PRIMARY KEY（rowid 别名）生效，BIGINT 不会被
+# 当成 rowid 别名，INSERT 不带 id 就会撞 NOT NULL。生产用 MySQL 仍然 BIGINT，所以
+# 用 with_variant 让 SQLite 退回 INTEGER，对 ID 范围足够（rowid 本身就是 64-bit）。
+BigIntPK = BigInteger().with_variant(Integer(), "sqlite")
+
+
 class DocStatus(str, enum.Enum):
     pending = "pending"
     processing = "processing"
@@ -118,7 +124,7 @@ class Product(Base):
 
     __tablename__ = "product"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     industry: Mapped[str] = mapped_column(String(64), default="")
@@ -151,7 +157,7 @@ class KpProductLink(Base):
 
     __tablename__ = "kp_product_link"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     kp_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("kp_registry.id", ondelete="CASCADE"), index=True
     )
@@ -170,7 +176,7 @@ class KpProductLink(Base):
 class KbDocument(Base):
     __tablename__ = "kb_document"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     file_name: Mapped[str] = mapped_column(String(512), nullable=False)
     source_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     mime: Mapped[str] = mapped_column(String(128), default="")
@@ -193,7 +199,7 @@ class KbDocument(Base):
 class KbChunk(Base):
     __tablename__ = "kb_chunk"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("kb_document.id", ondelete="CASCADE"), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -213,7 +219,7 @@ class KbChunk(Base):
 class KpRegistry(Base):
     __tablename__ = "kp_registry"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     definition: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str] = mapped_column(String(128), default="")
@@ -313,7 +319,7 @@ class KpCardContent(Base):
 class KpChunkLink(Base):
     __tablename__ = "kp_chunk_link"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     kp_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("kp_registry.id", ondelete="CASCADE"), index=True)
     chunk_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("kb_chunk.id", ondelete="CASCADE"), index=True)
     relevance: Mapped[float] = mapped_column(Float, default=0.0)
@@ -335,7 +341,7 @@ class KpExtractionJob(Base):
 
     __tablename__ = "kp_extraction_job"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("kb_document.id", ondelete="CASCADE"), index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     candidate_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -351,7 +357,7 @@ class PracticeRole(Base):
 
     __tablename__ = "practice_role"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     product_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("product.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -395,7 +401,7 @@ class CourseAssignment(Base):
 
     __tablename__ = "course_assignment"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     product_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("product.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -426,7 +432,7 @@ class Learner(Base):
 
     __tablename__ = "learner"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     dept: Mapped[str] = mapped_column(String(64), default="")
     # 外部系统标识（工号/邮箱/手机号），demo 选填，方便后续对接 SSO
@@ -441,7 +447,7 @@ class AssessmentTemplate(Base):
 
     __tablename__ = "assessment_template"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     mode: Mapped[AssessmentMode] = mapped_column(
         Enum(AssessmentMode, native_enum=False, length=16),
@@ -472,7 +478,7 @@ class AssessmentAssignment(Base):
 
     __tablename__ = "assessment_assignment"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     template_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("assessment_template.id", ondelete="CASCADE"), index=True
     )
@@ -504,7 +510,7 @@ class AssessmentResponse(Base):
 
     __tablename__ = "assessment_response"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     assignment_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("assessment_assignment.id", ondelete="CASCADE"), index=True
     )
@@ -533,7 +539,7 @@ class ProductKp(Base):
 
     __tablename__ = "product_kp"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     product_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("product.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -555,7 +561,7 @@ class LearnerKpProgress(Base):
 
     __tablename__ = "learner_kp_progress"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     learner_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("learner.id", ondelete="CASCADE"), index=True, nullable=False
     )

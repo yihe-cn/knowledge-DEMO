@@ -18,6 +18,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "--directory", "server", "uvicorn", "app.main:app", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "simugo-demo-docker",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["start", "-a", "simugo-demo-test"],
+      "port": 18001
     }
   ]
 }

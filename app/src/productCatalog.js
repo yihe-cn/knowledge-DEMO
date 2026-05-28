@@ -212,8 +212,9 @@ let _activeProductId = null;
 // ─── 后端动态产品 ──────────────────────────────────────────────
 // admin 创建的产品通过 /api/courses/by-account 拉到前端，与上面静态注册的 PRODUCTS 合并。
 // meta.fromBackend = true 用于在 AccountHome 区分来源。
-const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE)
-  || 'http://localhost:8000';
+// 注意：用 ?? 防御 VITE_API_BASE=""（单镜像同源）被当 falsy 落回 localhost:8000。
+const API_BASE = (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_BASE : undefined)
+  ?? 'http://localhost:8000';
 
 export const REMOTE_PRODUCT_IDS = new Set();
 export const ASSIGNED_PRODUCT_IDS = new Set();

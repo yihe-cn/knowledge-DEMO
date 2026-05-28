@@ -1,6 +1,8 @@
 // 考核模块学员端 API 封装。鉴权走 ?token= 查询参数 + X-Assessment-Token 头双保险。
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+// 用 ?? 而不是 ||：单镜像 demo 把 VITE_API_BASE 设成 ""，让 API 走同源相对路径；
+// || 会把空字符串当 falsy 落回 localhost:8000，导致浏览器跨域请求 404。
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 // 注入式 token：主流程从 AccountHome/HomeScreen 进入时通过 setAssessmentToken 设置；
 // 外发链接进入则走 URL ?token=。两条路径共享同一组 API。
