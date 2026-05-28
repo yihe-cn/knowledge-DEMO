@@ -114,6 +114,10 @@ function AppRoot() {
     try { return sessionStorage.getItem(AUTH_STORAGE_KEY) === '1'; } catch { return false; }
   });
   const t = useTheme('cream');
+  const logout = useCallback(() => {
+    try { sessionStorage.removeItem(AUTH_STORAGE_KEY); } catch {}
+    setAuthed(false);
+  }, []);
   if (hasAssessmentToken) return <AssessmentScreen />;
   if (!authed) {
     return (
@@ -137,10 +141,10 @@ function AppRoot() {
       </>
     );
   }
-  return <MainApp />;
+  return <MainApp onLogout={logout} />;
 }
 
-function MainApp() {
+function MainApp({ onLogout }) {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const t = useTheme(tweaks.theme);
 
@@ -300,6 +304,7 @@ function MainApp() {
               switchProduct={switchProduct}
               progressByProduct={progressByProduct}
               go={go}
+              onLogout={onLogout}
             />
           )}
           {route === 'home'     && product && <HomeScreen     t={t} state={currentProgress} setState={setCurrentProgress} go={go} account={account} product={product} onBackToAccounts={goAccounts} switchProduct={switchProduct} />}

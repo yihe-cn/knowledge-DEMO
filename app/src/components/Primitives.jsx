@@ -5,6 +5,7 @@ import {
   ChevronLeft, BookOpen, BarChart2, Lock, Check, ChevronRight,
   Play, Zap, RefreshCw, Sparkles, User, RotateCcw, Heart,
   Flame, Target, Route, X, Dot, MessageCircle, AlertCircle,
+  LogOut,
 } from 'lucide-react';
 
 const ICON_MAP = {
@@ -29,6 +30,7 @@ const ICON_MAP = {
   dot:     Dot,
   chat:    MessageCircle,
   alert:   AlertCircle,
+  logout:  LogOut,
 };
 
 export function Card({ children, t, style = {}, inset = false, radius = 22, depth = 1, onClick }) {

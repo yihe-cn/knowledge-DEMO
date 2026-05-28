@@ -66,7 +66,7 @@ function pickRecommended(ids, progressByProduct) {
   return ranked[0] || null;
 }
 
-function AccountHome({ t, accountId, switchAccount, switchProduct, progressByProduct, go }) {
+function AccountHome({ t, accountId, switchAccount, switchProduct, progressByProduct, go, onLogout }) {
   const account = getAccount(accountId);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -92,6 +92,7 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
         setMenuOpen={setMenuOpen}
         switchAccount={switchAccount}
         menuRef={menuRef}
+        onLogout={onLogout}
       />
 
       <Greeting t={t} account={account} />
@@ -143,7 +144,7 @@ function AccountHome({ t, accountId, switchAccount, switchProduct, progressByPro
 }
 
 // ─── 顶部品牌条：左 wordmark，右头像（含 popover）────────────────────
-function BrandBar({ t, account, menuOpen, setMenuOpen, switchAccount, menuRef }) {
+function BrandBar({ t, account, menuOpen, setMenuOpen, switchAccount, menuRef, onLogout }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -215,6 +216,27 @@ function BrandBar({ t, account, menuOpen, setMenuOpen, switchAccount, menuRef })
                 </div>
               );
             })}
+            {onLogout && (
+              <>
+                <div style={{ height: 1, background: t.line, margin: '6px 8px' }} />
+                <div
+                  onClick={() => { setMenuOpen(false); onLogout(); }}
+                  style={{
+                    padding: '9px 10px',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    color: t.bad,
+                    transition: 'background .15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = `${t.bad}10`; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <Icon name="logout" size={16} color={t.bad} stroke={2.1} />
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>退出登录</div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
