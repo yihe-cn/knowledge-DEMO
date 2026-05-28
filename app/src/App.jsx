@@ -22,6 +22,9 @@ import { ReportScreen } from './screens/Report.jsx';
 import { AIQAScreen } from './screens/AIQA.jsx';
 import { NotesScreen } from './screens/Notes.jsx';
 import { AssessmentScreen } from './screens/Assessment.jsx';
+import LoginScreen from './screens/Login.jsx';
+
+const AUTH_STORAGE_KEY = 'simugo:auth:v1';
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "cream",
@@ -106,7 +109,34 @@ function writeUrlParams({ account, product, route = null }) {
 function AppRoot() {
   const hasAssessmentToken = typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).has('token');
+  const [authed, setAuthed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try { return sessionStorage.getItem(AUTH_STORAGE_KEY) === '1'; } catch { return false; }
+  });
+  const t = useTheme('cream');
   if (hasAssessmentToken) return <AssessmentScreen />;
+  if (!authed) {
+    return (
+      <>
+        <GlobalStyle t={t} />
+        <div style={{
+          width: '100%', height: '100dvh',
+          background: t.bg, color: t.text,
+          display: 'flex', flexDirection: 'column',
+          fontFamily: 'inherit', overflow: 'hidden',
+          paddingTop: 'env(safe-area-inset-top)',
+        }}>
+          <LoginScreen
+            t={t}
+            onLogin={() => {
+              try { sessionStorage.setItem(AUTH_STORAGE_KEY, '1'); } catch {}
+              setAuthed(true);
+            }}
+          />
+        </div>
+      </>
+    );
+  }
   return <MainApp />;
 }
 
