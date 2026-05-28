@@ -1,7 +1,8 @@
 """KB 文档管理 admin 接口。
 
 约定：所有上传文件落到 settings 配置的本地目录（MVP，不用 OSS/MinIO），
-然后通过 Celery 投递 ingestion 任务；Celery 不可用时退化为内联同步执行。
+默认在 FastAPI 进程内联执行 ingestion。Milvus Lite 使用本地文件锁，不适合作为
+FastAPI + Celery 多进程共享写入目标；如需 Celery，显式设置 CELERY_ENABLED=true。
 """
 from __future__ import annotations
 
@@ -104,40 +105,45 @@ async def upload_document(
 
     await asyncio.to_thread(_copy_to_disk)
 
-    # Celery .delay() 走 Redis broker，也是同步 IO（amqp/redis-py sync 客户端）
-    try:
-        from ..celery_app import ingest_document_task
-
-        async_result = await asyncio.to_thread(
-            ingest_document_task.delay, str(saved_path), product_id
-        )
-        return {
-            "ok": True,
-            "file_name": name,
-            "task_id": async_result.id,
-            "mode": "celery",
-            "saved_path": str(saved_path),
-            "product_id": product_id,
-        }
-    except Exception as e:
-        from ..ingestion.pipeline import ingest_document_sync
-
+    if _settings.celery_enabled:
+        # Celery .delay() 走 Redis broker，也是同步 IO（amqp/redis-py sync 客户端）
         try:
-            # 同步 pipeline 内部会调 embed_sync (asyncio.run) —— 必须丢线程池跑，
-            # 否则在 FastAPI event loop 里会 RuntimeError: asyncio.run() cannot be called from a running event loop
-            doc_id = await asyncio.to_thread(
-                ingest_document_sync, str(saved_path), product_id=product_id
+            from ..celery_app import ingest_document_task
+
+            async_result = await asyncio.to_thread(
+                ingest_document_task.delay, str(saved_path), product_id
             )
             return {
                 "ok": True,
                 "file_name": name,
-                "doc_id": doc_id,
-                "mode": "inline",
-                "celery_error": repr(e)[:200],
+                "task_id": async_result.id,
+                "mode": "celery",
+                "saved_path": str(saved_path),
                 "product_id": product_id,
             }
-        except Exception as inner:
-            raise HTTPException(500, f"入库失败: {inner!r}")
+        except Exception as e:
+            celery_error = repr(e)[:200]
+    else:
+        celery_error = "CELERY_ENABLED=false"
+
+    from ..ingestion.pipeline import ingest_document_sync
+
+    try:
+        # 同步 pipeline 内部会调 embed_sync (asyncio.run) —— 必须丢线程池跑，
+        # 否则在 FastAPI event loop 里会 RuntimeError: asyncio.run() cannot be called from a running event loop
+        doc_id = await asyncio.to_thread(
+            ingest_document_sync, str(saved_path), product_id=product_id
+        )
+        return {
+            "ok": True,
+            "file_name": name,
+            "doc_id": doc_id,
+            "mode": "inline",
+            "celery_error": celery_error,
+            "product_id": product_id,
+        }
+    except Exception as inner:
+        raise HTTPException(500, f"入库失败: {inner!r}")
 
 
 @router.get("/admin/kb/documents")
@@ -248,16 +254,21 @@ async def reextract_kps(doc_id: int, session: AsyncSession = Depends(get_session
     doc = await session.get(KbDocument, doc_id)
     if not doc:
         raise HTTPException(404, "doc not found")
-    try:
-        from ..celery_app import extract_kps_task
+    if _settings.celery_enabled:
+        try:
+            from ..celery_app import extract_kps_task
 
-        r = await asyncio.to_thread(extract_kps_task.delay, doc_id)
-        return {"ok": True, "task_id": r.id, "mode": "celery"}
-    except Exception as e:
-        from ..kp_extraction.extractor import extract_kps_sync
+            r = await asyncio.to_thread(extract_kps_task.delay, doc_id)
+            return {"ok": True, "task_id": r.id, "mode": "celery"}
+        except Exception as e:
+            celery_error = repr(e)[:200]
+    else:
+        celery_error = "CELERY_ENABLED=false"
 
-        result = await asyncio.to_thread(extract_kps_sync, doc_id)
-        return {"ok": True, "mode": "inline", "celery_error": repr(e)[:200], "result": result}
+    from ..kp_extraction.extractor import extract_kps_sync
+
+    result = await asyncio.to_thread(extract_kps_sync, doc_id)
+    return {"ok": True, "mode": "inline", "celery_error": celery_error, "result": result}
 
 
 @router.delete("/admin/kb/documents/{doc_id}")

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..db import DocStatus, KbChunk, KbDocument, SyncSessionLocal
 from ..embeddings import embed_sync
 from ..vector_store import delete_by_chunk_ids, upsert_chunks
@@ -112,16 +113,28 @@ def ingest_document_sync(
         doc_id = doc.id
 
     if trigger_kp_extraction:
-        try:
-            from ..celery_app import extract_kps_task  # 延迟导入避免 Celery 未启时阻塞 CLI
-            extract_kps_task.delay(doc_id)
-        except Exception as e:
-            # Celery 不可达不影响入库本身，但要写到 doc.error 让运维能看到
-            with SyncSessionLocal() as session:
-                doc = session.get(KbDocument, doc_id)
-                if doc is not None:
-                    msg = f"[kp_extract_dispatch_failed] {e!r}"[:2000]
-                    doc.error = (doc.error + " | " + msg) if doc.error else msg
-                    session.commit()
+        if settings.celery_enabled:
+            try:
+                from ..celery_app import extract_kps_task  # 延迟导入避免 Celery 未启时阻塞 CLI
+                extract_kps_task.delay(doc_id)
+            except Exception as e:
+                # Celery 不可达不影响入库本身，但要写到 doc.error 让运维能看到
+                with SyncSessionLocal() as session:
+                    doc = session.get(KbDocument, doc_id)
+                    if doc is not None:
+                        msg = f"[kp_extract_dispatch_failed] {e!r}"[:2000]
+                        doc.error = (doc.error + " | " + msg) if doc.error else msg
+                        session.commit()
+        else:
+            try:
+                from ..kp_extraction.extractor import extract_kps_sync
+                extract_kps_sync(doc_id)
+            except Exception as e:
+                with SyncSessionLocal() as session:
+                    doc = session.get(KbDocument, doc_id)
+                    if doc is not None:
+                        msg = f"[kp_extract_inline_failed] {e!r}"[:2000]
+                        doc.error = (doc.error + " | " + msg) if doc.error else msg
+                        session.commit()
 
     return doc_id

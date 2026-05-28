@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     mysql_dsn: str = "sqlite+aiosqlite:////data/app.db"
     mysql_dsn_sync: str = "sqlite:////data/app.db"
     redis_url: str = "redis://127.0.0.1:6379/0"
+    # Milvus Lite uses a local file lock. Keep Celery disabled by default so
+    # vector writes run in the FastAPI process instead of a separate worker.
+    celery_enabled: bool = False
     # Milvus Lite 本地 .db 文件路径（嵌入式，无独立 Milvus 服务）
     milvus_db_path: str = "/data/milvus.db"
     milvus_collection: str = "kb_chunks"

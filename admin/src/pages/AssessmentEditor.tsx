@@ -78,7 +78,12 @@ export default function AssessmentEditor() {
   });
 
   const aiMut = useMutation({
-    mutationFn: () => aiGenerateQuestions(tplId, { num: aiNum, difficulty: aiDiff }),
+    mutationFn: () =>
+      aiGenerateQuestions(tplId, {
+        num: aiNum,
+        difficulty: aiDiff,
+        scope_kp_ids: scopeKpIds,
+      }),
     onSuccess: (drafts) => {
       const startIdx = questions.length;
       const appended = drafts.map((d: any, i: number) => ({

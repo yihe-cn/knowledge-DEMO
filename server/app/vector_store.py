@@ -18,7 +18,7 @@
 """
 from __future__ import annotations
 
-from functools import lru_cache
+from contextlib import contextmanager
 from typing import Iterable
 
 from pymilvus import DataType, MilvusClient
@@ -26,13 +26,17 @@ from pymilvus import DataType, MilvusClient
 from .config import settings
 
 
-@lru_cache(maxsize=1)
-def _client() -> MilvusClient:
-    return MilvusClient(uri=settings.milvus_db_path)
-
-
-# Collection load 状态用进程级标记记忆，避免每次请求都触发 load_collection RPC
-_loaded: set[str] = set()
+@contextmanager
+def _client():
+    # Milvus Lite locks the local .db file per process. Keep the Python client
+    # scoped to one operation; vector writes still need to stay in the same
+    # process as the API in Lite mode because the embedded server can retain
+    # the file lock for the process lifetime.
+    client = MilvusClient(uri=settings.milvus_db_path)
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 def _ensure_collection(client: MilvusClient) -> None:
@@ -57,9 +61,7 @@ def _ensure_collection(client: MilvusClient) -> None:
 
     # Milvus Lite 从 seed 文件加载进来时集合默认 "released"，必须 load 才能 search/query。
     # load_collection 是幂等的，重复调用是 no-op。
-    if name not in _loaded:
-        client.load_collection(name)
-        _loaded.add(name)
+    client.load_collection(name)
 
 
 def _ensure_kp_collection(client: MilvusClient) -> None:
@@ -79,35 +81,33 @@ def _ensure_kp_collection(client: MilvusClient) -> None:
             collection_name=name, schema=schema, index_params=index_params
         )
 
-    if name not in _loaded:
-        client.load_collection(name)
-        _loaded.add(name)
+    client.load_collection(name)
 
 
 def _reload_collection() -> None:
     """search/query 报 'released' 时强制重新 load 一次。"""
-    _loaded.discard(settings.milvus_collection)
-    _ensure_collection(_client())
+    with _client() as client:
+        _ensure_collection(client)
 
 
 def _reload_kp_collection() -> None:
-    _loaded.discard(settings.milvus_kp_collection)
-    _ensure_kp_collection(_client())
+    with _client() as client:
+        _ensure_kp_collection(client)
 
 
 def get_collection_name() -> str:
-    client = _client()
-    _ensure_collection(client)
+    with _client() as client:
+        _ensure_collection(client)
     return settings.milvus_collection
 
 
 def num_entities() -> int:
     """供 /healthz 用，不存在则当 0。"""
-    client = _client()
-    if not client.has_collection(settings.milvus_collection):
-        return 0
-    stats = client.get_collection_stats(settings.milvus_collection)
-    return int(stats.get("row_count", 0))
+    with _client() as client:
+        if not client.has_collection(settings.milvus_collection):
+            return 0
+        stats = client.get_collection_stats(settings.milvus_collection)
+        return int(stats.get("row_count", 0))
 
 
 def upsert_chunks(rows: Iterable[dict]) -> None:
@@ -123,9 +123,9 @@ def upsert_chunks(rows: Iterable[dict]) -> None:
     ]
     if not items:
         return
-    client = _client()
-    _ensure_collection(client)
-    client.upsert(collection_name=settings.milvus_collection, data=items)
+    with _client() as client:
+        _ensure_collection(client)
+        client.upsert(collection_name=settings.milvus_collection, data=items)
 
 
 _DOC_IDS_BATCH = 200  # 单次 expr 里塞的 doc_id 上限；超过分批 search + score merge
@@ -151,7 +151,7 @@ def _search_one(
     except Exception as e:
         # collection released → 自愈：重新 load 一次再试
         if "released" in str(e).lower():
-            _reload_collection()
+            client.load_collection(settings.milvus_collection)
             res = _do()
         else:
             raise
@@ -179,52 +179,52 @@ def search(
     kp_id: int | None = None,
     doc_ids: list[int] | None = None,
 ) -> list[dict]:
-    client = _client()
-    _ensure_collection(client)
-    kp_clause = f"array_contains(kp_ids, {int(kp_id)})" if kp_id is not None else None
+    with _client() as client:
+        _ensure_collection(client)
+        kp_clause = f"array_contains(kp_ids, {int(kp_id)})" if kp_id is not None else None
 
-    if not doc_ids or len(doc_ids) <= _DOC_IDS_BATCH:
-        parts = []
-        if kp_clause:
-            parts.append(kp_clause)
-        if doc_ids:
-            ids = ",".join(str(int(d)) for d in doc_ids)
+        if not doc_ids or len(doc_ids) <= _DOC_IDS_BATCH:
+            parts = []
+            if kp_clause:
+                parts.append(kp_clause)
+            if doc_ids:
+                ids = ",".join(str(int(d)) for d in doc_ids)
+                parts.append(f"doc_id in [{ids}]")
+            return _search_one(client, query_vector, top_k, " and ".join(parts) if parts else None)
+
+        merged: dict[int, dict] = {}
+        for i in range(0, len(doc_ids), _DOC_IDS_BATCH):
+            batch = doc_ids[i : i + _DOC_IDS_BATCH]
+            ids = ",".join(str(int(d)) for d in batch)
+            parts = []
+            if kp_clause:
+                parts.append(kp_clause)
             parts.append(f"doc_id in [{ids}]")
-        return _search_one(client, query_vector, top_k, " and ".join(parts) if parts else None)
-
-    merged: dict[int, dict] = {}
-    for i in range(0, len(doc_ids), _DOC_IDS_BATCH):
-        batch = doc_ids[i : i + _DOC_IDS_BATCH]
-        ids = ",".join(str(int(d)) for d in batch)
-        parts = []
-        if kp_clause:
-            parts.append(kp_clause)
-        parts.append(f"doc_id in [{ids}]")
-        for h in _search_one(client, query_vector, top_k, " and ".join(parts)):
-            cid = h["chunk_id"]
-            if cid not in merged or merged[cid]["score"] < h["score"]:
-                merged[cid] = h
-    return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+            for h in _search_one(client, query_vector, top_k, " and ".join(parts)):
+                cid = h["chunk_id"]
+                if cid not in merged or merged[cid]["score"] < h["score"]:
+                    merged[cid] = h
+        return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
 
 
 def delete_by_chunk_ids(chunk_ids: list[int]) -> None:
     if not chunk_ids:
         return
-    client = _client()
-    _ensure_collection(client)
-    client.delete(
-        collection_name=settings.milvus_collection,
-        filter=f"chunk_id in [{','.join(str(int(c)) for c in chunk_ids)}]",
-    )
+    with _client() as client:
+        _ensure_collection(client)
+        client.delete(
+            collection_name=settings.milvus_collection,
+            filter=f"chunk_id in [{','.join(str(int(c)) for c in chunk_ids)}]",
+        )
 
 
 def delete_by_doc(doc_id: int) -> None:
-    client = _client()
-    _ensure_collection(client)
-    client.delete(
-        collection_name=settings.milvus_collection,
-        filter=f"doc_id == {int(doc_id)}",
-    )
+    with _client() as client:
+        _ensure_collection(client)
+        client.delete(
+            collection_name=settings.milvus_collection,
+            filter=f"doc_id == {int(doc_id)}",
+        )
 
 
 class MilvusChunkMissing(LookupError):
@@ -233,48 +233,48 @@ class MilvusChunkMissing(LookupError):
 
 def update_kp_ids(chunk_id: int, kp_ids: list[int]) -> None:
     """KP 审批后回写。Milvus 不支持单字段 update，用 upsert 同 id 整行覆盖前需先读 vector。"""
-    client = _client()
-    _ensure_collection(client)
-    rows = client.query(
-        collection_name=settings.milvus_collection,
-        filter=f"chunk_id == {int(chunk_id)}",
-        output_fields=["chunk_id", "doc_id", "vector"],
-        limit=1,
-    )
-    if not rows:
-        raise MilvusChunkMissing(f"chunk_id={chunk_id} 在 Milvus 中不存在")
-    r = rows[0]
-    client.upsert(
-        collection_name=settings.milvus_collection,
-        data=[
-            {
-                "chunk_id": int(r["chunk_id"]),
-                "doc_id": int(r["doc_id"]),
-                "kp_ids": list(kp_ids),
-                "vector": r["vector"],
-            }
-        ],
-    )
+    with _client() as client:
+        _ensure_collection(client)
+        rows = client.query(
+            collection_name=settings.milvus_collection,
+            filter=f"chunk_id == {int(chunk_id)}",
+            output_fields=["chunk_id", "doc_id", "vector"],
+            limit=1,
+        )
+        if not rows:
+            raise MilvusChunkMissing(f"chunk_id={chunk_id} 在 Milvus 中不存在")
+        r = rows[0]
+        client.upsert(
+            collection_name=settings.milvus_collection,
+            data=[
+                {
+                    "chunk_id": int(r["chunk_id"]),
+                    "doc_id": int(r["doc_id"]),
+                    "kp_ids": list(kp_ids),
+                    "vector": r["vector"],
+                }
+            ],
+        )
 
 
 # ── KP 向量集合（与 kb_chunks 并列）────────────────────────────────────
 def upsert_kp_embedding(kp_id: int, status: int, vector: list[float]) -> None:
     """单个 KP 行 upsert。status: 1=approved, 0=其他。"""
-    client = _client()
-    _ensure_kp_collection(client)
-    client.upsert(
-        collection_name=settings.milvus_kp_collection,
-        data=[{"kp_id": int(kp_id), "status": int(status), "vector": vector}],
-    )
+    with _client() as client:
+        _ensure_kp_collection(client)
+        client.upsert(
+            collection_name=settings.milvus_kp_collection,
+            data=[{"kp_id": int(kp_id), "status": int(status), "vector": vector}],
+        )
 
 
 def delete_kp_embedding(kp_id: int) -> None:
-    client = _client()
-    _ensure_kp_collection(client)
-    client.delete(
-        collection_name=settings.milvus_kp_collection,
-        filter=f"kp_id == {int(kp_id)}",
-    )
+    with _client() as client:
+        _ensure_kp_collection(client)
+        client.delete(
+            collection_name=settings.milvus_kp_collection,
+            filter=f"kp_id == {int(kp_id)}",
+        )
 
 
 def search_kps(
@@ -283,31 +283,31 @@ def search_kps(
     approved_only: bool = True,
 ) -> list[dict]:
     """根据 query 检索 KP 自身。返回 [{kp_id, score}]，score 是相似度（越大越相关）。"""
-    client = _client()
-    _ensure_kp_collection(client)
+    with _client() as client:
+        _ensure_kp_collection(client)
 
-    def _do():
-        return client.search(
-            collection_name=settings.milvus_kp_collection,
-            data=[query_vector],
-            anns_field="vector",
-            search_params={"metric_type": "COSINE", "params": {}},
-            limit=top_k,
-            filter="status == 1" if approved_only else "",
-            output_fields=["kp_id", "status"],
-        )
+        def _do():
+            return client.search(
+                collection_name=settings.milvus_kp_collection,
+                data=[query_vector],
+                anns_field="vector",
+                search_params={"metric_type": "COSINE", "params": {}},
+                limit=top_k,
+                filter="status == 1" if approved_only else "",
+                output_fields=["kp_id", "status"],
+            )
 
-    try:
-        res = _do()
-    except Exception as e:
-        if "released" in str(e).lower():
-            _reload_kp_collection()
+        try:
             res = _do()
-        else:
-            raise
+        except Exception as e:
+            if "released" in str(e).lower():
+                client.load_collection(settings.milvus_kp_collection)
+                res = _do()
+            else:
+                raise
 
-    out: list[dict] = []
-    for hit in res[0]:
-        dist = float(hit.distance)
-        out.append({"kp_id": int(hit["kp_id"]), "score": 1.0 - dist})
-    return out
+        out: list[dict] = []
+        for hit in res[0]:
+            dist = float(hit.distance)
+            out.append({"kp_id": int(hit["kp_id"]), "score": 1.0 - dist})
+        return out

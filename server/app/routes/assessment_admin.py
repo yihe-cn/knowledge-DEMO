@@ -204,6 +204,10 @@ def _normalize_question(q: dict[str, Any], idx: int) -> dict[str, Any]:
     }
 
 
+def _normalize_int_ids(values: list[Any] | None) -> list[int]:
+    return [int(x) for x in (values or []) if str(x).lstrip("-").isdigit()]
+
+
 @router.get("/admin/assessments/templates/{template_id}")
 async def get_template(
     template_id: int, session: AsyncSession = Depends(get_session)
@@ -255,8 +259,11 @@ async def generate_questions(
     t = await session.get(AssessmentTemplate, template_id)
     if not t:
         raise HTTPException(404, "template not found")
-    scope = t.scope or {}
-    kp_ids = [int(x) for x in (scope.get("kp_ids") or []) if str(x).lstrip("-").isdigit()]
+    if body.scope_kp_ids is not None:
+        kp_ids = _normalize_int_ids(body.scope_kp_ids)
+    else:
+        scope = t.scope or {}
+        kp_ids = _normalize_int_ids(scope.get("kp_ids") or [])
     if not kp_ids:
         raise HTTPException(400, "scope.kp_ids 为空，无法生成题目")
     drafts = await generate_bank_questions(

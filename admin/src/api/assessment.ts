@@ -87,7 +87,7 @@ export async function patchTemplate(id: number, body: Partial<AssessmentTemplate
 
 export async function aiGenerateQuestions(
   id: number,
-  body: { num: number; difficulty: 'easy' | 'normal' | 'hard' },
+  body: { num: number; difficulty: 'easy' | 'normal' | 'hard'; scope_kp_ids?: number[] },
 ) {
   const { data } = await api.post<{ questions: Omit<AssessmentQuestion, 'idx'>[] }>(
     `/admin/assessments/templates/${id}/generate-questions`,

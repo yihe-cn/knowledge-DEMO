@@ -1,0 +1,426 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]: 知
+    - generic [ref=e5]:
+      - generic [ref=e6]: HR 知识中台
+      - generic [ref=e7]: v2.4 · OPS
+  - banner [ref=e8]:
+    - button "搜索条目、文件、员工提问、操作… ⌘K" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - generic [ref=e13]: 搜索条目、文件、员工提问、操作…
+      - generic [ref=e14]: ⌘K
+    - combobox "当前操作的归属产品" [ref=e15] [cursor=pointer]:
+      - option "选择课程" [selected]
+      - option "极氪 007（zeekr007）"
+      - option "宝怡乐 PAX®（pax）"
+      - option "PS_Champion三维问题汇总（PS_Champion）"
+      - option "SIMUGO 产品知识考核（simugo）"
+    - button "变更通知" [ref=e16] [cursor=pointer]:
+      - img [ref=e17]
+    - button "Token" [ref=e21] [cursor=pointer]:
+      - img [ref=e22]
+      - text: Token
+    - button "新建条目" [ref=e25] [cursor=pointer]:
+      - img [ref=e26]
+      - text: 新建条目
+    - button "导入文件" [ref=e28] [cursor=pointer]:
+      - img [ref=e29]
+      - text: 导入文件
+    - generic [ref=e32]:
+      - generic [ref=e33]: 陈
+      - generic [ref=e34]: 陈思雨 · HRBP
+  - complementary [ref=e35]:
+    - generic [ref=e131] [cursor=pointer]:
+      - img [ref=e133]
+      - generic [ref=e135]: 工作台
+    - generic [ref=e41]: 课程运营
+    - generic [ref=e136] [cursor=pointer]:
+      - img [ref=e138]
+      - generic [ref=e141]: 课程管理
+    - generic [ref=e48]: 知识维护
+    - generic [ref=e142] [cursor=pointer]:
+      - img [ref=e144]
+      - generic [ref=e147]: 知识条目
+      - generic [ref=e148]: "142"
+    - generic [ref=e149] [cursor=pointer]:
+      - img [ref=e151]
+      - generic [ref=e154]: 源文件库
+      - generic [ref=e155]: "10"
+    - generic [ref=e156] [cursor=pointer]:
+      - img [ref=e158]
+      - generic [ref=e161]: 分类与标签
+    - generic [ref=e69]: 审核运营
+    - generic [ref=e162] [cursor=pointer]:
+      - img [ref=e164]
+      - generic [ref=e167]: 审核工作台
+      - generic [ref=e168]: "84"
+    - generic [ref=e169] [cursor=pointer]:
+      - img [ref=e171]
+      - generic [ref=e174]: 问答洞察
+    - generic [ref=e175] [cursor=pointer]:
+      - img [ref=e177]
+      - generic [ref=e181]: 变更与审计
+    - generic [ref=e90]: 考核管理
+    - generic [ref=e182] [cursor=pointer]:
+      - img [ref=e184]
+      - generic [ref=e186]: 考核模板
+    - generic [ref=e187] [cursor=pointer]:
+      - img [ref=e189]
+      - generic [ref=e192]: 任务分派
+    - generic [ref=e193] [cursor=pointer]:
+      - img [ref=e195]
+      - generic [ref=e198]: 结果统计
+    - generic [ref=e108]: 设置
+    - generic [ref=e199] [cursor=pointer]:
+      - img [ref=e201]
+      - generic [ref=e206]: 组织与成员
+    - generic [ref=e207] [cursor=pointer]:
+      - img [ref=e209]
+      - generic [ref=e212]: 系统配置
+    - generic [ref=e123] [cursor=pointer]:
+      - img [ref=e125]
+      - generic [ref=e127]: 收起侧栏
+  - main [ref=e128]:
+    - generic [ref=e213]:
+      - generic [ref=e215]:
+        - generic [ref=e216]:
+          - button "返 回" [ref=e218] [cursor=pointer]:
+            - generic [ref=e219]: 返 回
+          - heading "宝怡乐 PAX®" [level=2] [ref=e221]
+          - generic [ref=e223]: active
+        - generic [ref=e224]:
+          - generic [ref=e226]: 课程编码：pax
+          - button "删除课程" [ref=e228] [cursor=pointer]:
+            - generic [ref=e229]: 删除课程
+      - generic [ref=e233]:
+        - tablist [ref=e234]:
+          - generic [ref=e236]:
+            - tab "基本信息" [ref=e238] [cursor=pointer]
+            - tab "知识点" [active] [selected] [ref=e240] [cursor=pointer]
+            - tab "课程分发" [ref=e242] [cursor=pointer]
+            - tab "演练角色" [ref=e244] [cursor=pointer]
+        - generic [ref=e246]:
+          - text: "* *"
+          - tabpanel "知识点" [ref=e356]:
+            - generic [ref=e357]:
+              - generic [ref=e359] [cursor=pointer]:
+                - generic [ref=e361]:
+                  - combobox [ref=e363]
+                  - generic "已发布" [ref=e364]
+                - generic:
+                  - img:
+                    - img
+              - button "从全量 KP 添加" [ref=e366] [cursor=pointer]:
+                - generic [ref=e367]: 从全量 KP 添加
+              - button "新建知识点" [ref=e369] [cursor=pointer]:
+                - generic [ref=e370]: 新建知识点
+            - alert [ref=e371]:
+              - img "info-circle" [ref=e372]:
+                - img [ref=e373]
+              - generic [ref=e376]: 学员端只展示本课程下 approved 状态的知识点；draft 可先用于后台编辑。
+            - generic [ref=e379]:
+              - table [ref=e383]:
+                - rowgroup [ref=e392]:
+                  - row "Select all ID 名称 分类 状态 定义 操作" [ref=e393]:
+                    - columnheader "Select all" [ref=e394]:
+                      - checkbox "Select all" [ref=e398] [cursor=pointer]
+                    - columnheader "ID" [ref=e400]
+                    - columnheader "名称" [ref=e401]
+                    - columnheader "分类" [ref=e402]
+                    - columnheader "状态" [ref=e403]
+                    - columnheader "定义" [ref=e404]
+                    - columnheader "操作" [ref=e405]
+                - rowgroup [ref=e406]:
+                  - row "30 传统婴儿奶粉增稠剂 原理科普 approved 主要指用于缓解婴儿反流的淀粉和角豆胶成分。它们虽有增稠效果，但可能导致婴儿出现腹泻或便秘等下消化道副作用。 移 除" [ref=e407]:
+                    - cell [ref=e408]:
+                      - checkbox [ref=e411] [cursor=pointer]
+                    - cell "30" [ref=e413]
+                    - cell "传统婴儿奶粉增稠剂" [ref=e414]:
+                      - link "传统婴儿奶粉增稠剂" [ref=e415] [cursor=pointer]:
+                        - /url: /hr/items/30
+                    - cell "原理科普" [ref=e416]
+                    - cell "approved" [ref=e417]:
+                      - generic [ref=e418]: approved
+                    - cell "主要指用于缓解婴儿反流的淀粉和角豆胶成分。它们虽有增稠效果，但可能导致婴儿出现腹泻或便秘等下消化道副作用。" [ref=e419]
+                    - cell "移 除" [ref=e420]:
+                      - button "移 除" [ref=e421] [cursor=pointer]:
+                        - generic [ref=e422]: 移 除
+                  - row "29 淀粉果胶益生元复合物 原理科普 approved 指通过氢键形成的淀粉与果胶复合物。该结构能降低淀粉消化率，增加慢消化和抗性淀粉比例，并展现出益生菌的协同效应。 移 除" [ref=e423]:
+                    - cell [ref=e424]:
+                      - checkbox [ref=e427] [cursor=pointer]
+                    - cell "29" [ref=e429]
+                    - cell "淀粉果胶益生元复合物" [ref=e430]:
+                      - link "淀粉果胶益生元复合物" [ref=e431] [cursor=pointer]:
+                        - /url: /hr/items/29
+                    - cell "原理科普" [ref=e432]
+                    - cell "approved" [ref=e433]:
+                      - generic [ref=e434]: approved
+                    - cell "指通过氢键形成的淀粉与果胶复合物。该结构能降低淀粉消化率，增加慢消化和抗性淀粉比例，并展现出益生菌的协同效应。" [ref=e435]
+                    - cell "移 除" [ref=e436]:
+                      - button "移 除" [ref=e437] [cursor=pointer]:
+                        - generic [ref=e438]: 移 除
+                  - row "28 淀粉与果胶混合物的抗性机制 原理科普 approved 利用果胶对淀粉的保护与对消化酶的抑制，以及两者氢键形成的复合物，产生类似于单一抗性淀粉和果胶的协同益生菌作用。 移 除" [ref=e439]:
+                    - cell [ref=e440]:
+                      - checkbox [ref=e443] [cursor=pointer]
+                    - cell "28" [ref=e445]
+                    - cell "淀粉与果胶混合物的抗性机制" [ref=e446]:
+                      - link "淀粉与果胶混合物的抗性机制" [ref=e447] [cursor=pointer]:
+                        - /url: /hr/items/28
+                    - cell "原理科普" [ref=e448]
+                    - cell "approved" [ref=e449]:
+                      - generic [ref=e450]: approved
+                    - cell "利用果胶对淀粉的保护与对消化酶的抑制，以及两者氢键形成的复合物，产生类似于单一抗性淀粉和果胶的协同益生菌作用。" [ref=e451]
+                    - cell "移 除" [ref=e452]:
+                      - button "移 除" [ref=e453] [cursor=pointer]:
+                        - generic [ref=e454]: 移 除
+                  - row "18 生命早期肠道菌群干预窗口 原理科普 approved 指从出生前至出生后12月龄这一关键时期，是矫正肠道菌群以提高免疫应答的最佳时间。在此窗口期干预，对促进婴儿体液免疫发育及抗体产生具有决定性作用。 移 除" [ref=e455]:
+                    - cell [ref=e456]:
+                      - checkbox [ref=e459] [cursor=pointer]
+                    - cell "18" [ref=e461]
+                    - cell "生命早期肠道菌群干预窗口" [ref=e462]:
+                      - link "生命早期肠道菌群干预窗口" [ref=e463] [cursor=pointer]:
+                        - /url: /hr/items/18
+                    - cell "原理科普" [ref=e464]
+                    - cell "approved" [ref=e465]:
+                      - generic [ref=e466]: approved
+                    - cell "指从出生前至出生后12月龄这一关键时期，是矫正肠道菌群以提高免疫应答的最佳时间。在此窗口期干预，对促进婴儿体液免疫发育及抗体产生具有决定性作用。" [ref=e467]
+                    - cell "移 除" [ref=e468]:
+                      - button "移 除" [ref=e469] [cursor=pointer]:
+                        - generic [ref=e470]: 移 除
+                  - row "17 婴儿便秘与肠道菌群失调 原理科普 approved 患有便秘的婴儿通常伴有肠道菌群的失衡。研究表明，健康人肠道内的双歧杆菌含量较高，而便秘患者的非致病性大肠杆菌、拟杆菌比例及总菌量均存在差异。 移 除" [ref=e471]:
+                    - cell [ref=e472]:
+                      - checkbox [ref=e475] [cursor=pointer]
+                    - cell "17" [ref=e477]
+                    - cell "婴儿便秘与肠道菌群失调" [ref=e478]:
+                      - link "婴儿便秘与肠道菌群失调" [ref=e479] [cursor=pointer]:
+                        - /url: /hr/items/17
+                    - cell "原理科普" [ref=e480]
+                    - cell "approved" [ref=e481]:
+                      - generic [ref=e482]: approved
+                    - cell "患有便秘的婴儿通常伴有肠道菌群的失衡。研究表明，健康人肠道内的双歧杆菌含量较高，而便秘患者的非致病性大肠杆菌、拟杆菌比例及总菌量均存在差异。" [ref=e483]
+                    - cell "移 除" [ref=e484]:
+                      - button "移 除" [ref=e485] [cursor=pointer]:
+                        - generic [ref=e486]: 移 除
+                  - row "16 早期微生物接触与免疫发育 原理科普 approved 根据卫生假说，生命早期的微生物接触能作为免疫驱动引擎促进免疫成熟。若早期菌群建立延迟或紊乱，将显著增加远期过敏性及某些自身免疫性疾病的发生风险。 移 除" [ref=e487]:
+                    - cell [ref=e488]:
+                      - checkbox [ref=e491] [cursor=pointer]
+                    - cell "16" [ref=e493]
+                    - cell "早期微生物接触与免疫发育" [ref=e494]:
+                      - link "早期微生物接触与免疫发育" [ref=e495] [cursor=pointer]:
+                        - /url: /hr/items/16
+                    - cell "原理科普" [ref=e496]
+                    - cell "approved" [ref=e497]:
+                      - generic [ref=e498]: approved
+                    - cell "根据卫生假说，生命早期的微生物接触能作为免疫驱动引擎促进免疫成熟。若早期菌群建立延迟或紊乱，将显著增加远期过敏性及某些自身免疫性疾病的发生风险。" [ref=e499]
+                    - cell "移 除" [ref=e500]:
+                      - button "移 除" [ref=e501] [cursor=pointer]:
+                        - generic [ref=e502]: 移 除
+                  - row "15 新生儿期肠道菌群紊乱 原理科普 approved 指新生儿期肠道菌群的初始化建立延迟或发生失衡。这极易导致新生儿喂养不耐受、坏死性小肠结肠炎（NEC）及晚发性败血症等疾病的发生风险增加。 移 除" [ref=e503]:
+                    - cell [ref=e504]:
+                      - checkbox [ref=e507] [cursor=pointer]
+                    - cell "15" [ref=e509]
+                    - cell "新生儿期肠道菌群紊乱" [ref=e510]:
+                      - link "新生儿期肠道菌群紊乱" [ref=e511] [cursor=pointer]:
+                        - /url: /hr/items/15
+                    - cell "原理科普" [ref=e512]
+                    - cell "approved" [ref=e513]:
+                      - generic [ref=e514]: approved
+                    - cell "指新生儿期肠道菌群的初始化建立延迟或发生失衡。这极易导致新生儿喂养不耐受、坏死性小肠结肠炎（NEC）及晚发性败血症等疾病的发生风险增加。" [ref=e515]
+                    - cell "移 除" [ref=e516]:
+                      - button "移 除" [ref=e517] [cursor=pointer]:
+                        - generic [ref=e518]: 移 除
+                  - row "14 脑-肠-微生物轴 原理科普 approved 中枢神经系统与胃肠道之间存在双向交流的信号系统，肠道微生态状态与精神分裂症、孤独症等神经心理疾病密切相关。 移 除" [ref=e519]:
+                    - cell [ref=e520]:
+                      - checkbox [ref=e523] [cursor=pointer]
+                    - cell "14" [ref=e525]
+                    - cell "脑-肠-微生物轴" [ref=e526]:
+                      - link "脑-肠-微生物轴" [ref=e527] [cursor=pointer]:
+                        - /url: /hr/items/14
+                    - cell "原理科普" [ref=e528]
+                    - cell "approved" [ref=e529]:
+                      - generic [ref=e530]: approved
+                    - cell "中枢神经系统与胃肠道之间存在双向交流的信号系统，肠道微生态状态与精神分裂症、孤独症等神经心理疾病密切相关。" [ref=e531]
+                    - cell "移 除" [ref=e532]:
+                      - button "移 除" [ref=e533] [cursor=pointer]:
+                        - generic [ref=e534]: 移 除
+                  - row "13 生命早期菌群紊乱健康后果 原理科普 approved 生命早期肠道菌群紊乱会导致喂养不耐受、坏死性小肠结肠炎等短期问题，以及肥胖、过敏等远期健康风险。 移 除" [ref=e535]:
+                    - cell [ref=e536]:
+                      - checkbox [ref=e539] [cursor=pointer]
+                    - cell "13" [ref=e541]
+                    - cell "生命早期菌群紊乱健康后果" [ref=e542]:
+                      - link "生命早期菌群紊乱健康后果" [ref=e543] [cursor=pointer]:
+                        - /url: /hr/items/13
+                    - cell "原理科普" [ref=e544]
+                    - cell "approved" [ref=e545]:
+                      - generic [ref=e546]: approved
+                    - cell "生命早期肠道菌群紊乱会导致喂养不耐受、坏死性小肠结肠炎等短期问题，以及肥胖、过敏等远期健康风险。" [ref=e547]
+                    - cell "移 除" [ref=e548]:
+                      - button "移 除" [ref=e549] [cursor=pointer]:
+                        - generic [ref=e550]: 移 除
+                  - row "12 婴儿双歧杆菌定植影响因素 原理科普 approved 自然分娩和母乳喂养是促进新生儿肠道中双歧杆菌早期定植、建立优势菌群的核心积极因素。 移 除" [ref=e551]:
+                    - cell [ref=e552]:
+                      - checkbox [ref=e555] [cursor=pointer]
+                    - cell "12" [ref=e557]
+                    - cell "婴儿双歧杆菌定植影响因素" [ref=e558]:
+                      - link "婴儿双歧杆菌定植影响因素" [ref=e559] [cursor=pointer]:
+                        - /url: /hr/items/12
+                    - cell "原理科普" [ref=e560]
+                    - cell "approved" [ref=e561]:
+                      - generic [ref=e562]: approved
+                    - cell "自然分娩和母乳喂养是促进新生儿肠道中双歧杆菌早期定植、建立优势菌群的核心积极因素。" [ref=e563]
+                    - cell "移 除" [ref=e564]:
+                      - button "移 除" [ref=e565] [cursor=pointer]:
+                        - generic [ref=e566]: 移 除
+                  - row "11 生命早期肠道微生态影响因素 原理科普 approved 生命早期肠道微生态的形成受母体健康、分娩方式、喂养方式以及环境和饮食等多种关键因素的共同影响。 移 除" [ref=e567]:
+                    - cell [ref=e568]:
+                      - checkbox [ref=e571] [cursor=pointer]
+                    - cell "11" [ref=e573]
+                    - cell "生命早期肠道微生态影响因素" [ref=e574]:
+                      - link "生命早期肠道微生态影响因素" [ref=e575] [cursor=pointer]:
+                        - /url: /hr/items/11
+                    - cell "原理科普" [ref=e576]
+                    - cell "approved" [ref=e577]:
+                      - generic [ref=e578]: approved
+                    - cell "生命早期肠道微生态的形成受母体健康、分娩方式、喂养方式以及环境和饮食等多种关键因素的共同影响。" [ref=e579]
+                    - cell "移 除" [ref=e580]:
+                      - button "移 除" [ref=e581] [cursor=pointer]:
+                        - generic [ref=e582]: 移 除
+                  - row "10 肠道最大免疫器官属性 原理科普 approved 肠道集中了人体约80%的免疫细胞，是身体中最大的免疫器官，其微生态健康直接关系到人体的整体免疫防御和神经系统健康。 移 除" [ref=e583]:
+                    - cell [ref=e584]:
+                      - checkbox [ref=e587] [cursor=pointer]
+                    - cell "10" [ref=e589]
+                    - cell "肠道最大免疫器官属性" [ref=e590]:
+                      - link "肠道最大免疫器官属性" [ref=e591] [cursor=pointer]:
+                        - /url: /hr/items/10
+                    - cell "原理科普" [ref=e592]
+                    - cell "approved" [ref=e593]:
+                      - generic [ref=e594]: approved
+                    - cell "肠道集中了人体约80%的免疫细胞，是身体中最大的免疫器官，其微生态健康直接关系到人体的整体免疫防御和神经系统健康。" [ref=e595]
+                    - cell "移 除" [ref=e596]:
+                      - button "移 除" [ref=e597] [cursor=pointer]:
+                        - generic [ref=e598]: 移 除
+                  - row "9 肠道微生物核心功能 原理科普 approved 健康的肠道微生物具有辅助消化膳食纤维、合成特定维生素、调节能量代谢以及介导肠-脑沟通等多种促进健康的重要生理功能。 移 除" [ref=e599]:
+                    - cell [ref=e600]:
+                      - checkbox [ref=e603] [cursor=pointer]
+                    - cell "9" [ref=e605]
+                    - cell "肠道微生物核心功能" [ref=e606]:
+                      - link "肠道微生物核心功能" [ref=e607] [cursor=pointer]:
+                        - /url: /hr/items/9
+                    - cell "原理科普" [ref=e608]
+                    - cell "approved" [ref=e609]:
+                      - generic [ref=e610]: approved
+                    - cell "健康的肠道微生物具有辅助消化膳食纤维、合成特定维生素、调节能量代谢以及介导肠-脑沟通等多种促进健康的重要生理功能。" [ref=e611]
+                    - cell "移 除" [ref=e612]:
+                      - button "移 除" [ref=e613] [cursor=pointer]:
+                        - generic [ref=e614]: 移 除
+                  - row "8 肠道微生态构建关键期 原理科普 approved 指婴儿出生后1岁以内及生命早期1000天，这是肠道菌群建立的黄金窗口期，其稳定性对婴幼儿后续的免疫成熟和长期健康有深远影响。 移 除" [ref=e615]:
+                    - cell [ref=e616]:
+                      - checkbox [ref=e619] [cursor=pointer]
+                    - cell "8" [ref=e621]
+                    - cell "肠道微生态构建关键期" [ref=e622]:
+                      - link "肠道微生态构建关键期" [ref=e623] [cursor=pointer]:
+                        - /url: /hr/items/8
+                    - cell "原理科普" [ref=e624]
+                    - cell "approved" [ref=e625]:
+                      - generic [ref=e626]: approved
+                    - cell "指婴儿出生后1岁以内及生命早期1000天，这是肠道菌群建立的黄金窗口期，其稳定性对婴幼儿后续的免疫成熟和长期健康有深远影响。" [ref=e627]
+                    - cell "移 除" [ref=e628]:
+                      - button "移 除" [ref=e629] [cursor=pointer]:
+                        - generic [ref=e630]: 移 除
+                  - row "7 婴幼儿肠道菌群演变规律 原理科普 approved 婴幼儿肠道菌群的建立是一个多样性与稳定性递增的缓慢动态过程，通常在3岁左右达到相对成熟稳定的状态。 移 除" [ref=e631]:
+                    - cell [ref=e632]:
+                      - checkbox [ref=e635] [cursor=pointer]
+                    - cell "7" [ref=e637]
+                    - cell "婴幼儿肠道菌群演变规律" [ref=e638]:
+                      - link "婴幼儿肠道菌群演变规律" [ref=e639] [cursor=pointer]:
+                        - /url: /hr/items/7
+                    - cell "原理科普" [ref=e640]
+                    - cell "approved" [ref=e641]:
+                      - generic [ref=e642]: approved
+                    - cell "婴幼儿肠道菌群的建立是一个多样性与稳定性递增的缓慢动态过程，通常在3岁左右达到相对成熟稳定的状态。" [ref=e643]
+                    - cell "移 除" [ref=e644]:
+                      - button "移 除" [ref=e645] [cursor=pointer]:
+                        - generic [ref=e646]: 移 除
+                  - row "6 人乳源微生物菌群 原理科普 approved 指人乳中天然存在的葡萄球菌、乳酸菌及双歧杆菌等菌群，它们是婴儿肠道菌群的重要来源，对宝宝肠道健康至关重要。 移 除" [ref=e647]:
+                    - cell [ref=e648]:
+                      - checkbox [ref=e651] [cursor=pointer]
+                    - cell "6" [ref=e653]
+                    - cell "人乳源微生物菌群" [ref=e654]:
+                      - link "人乳源微生物菌群" [ref=e655] [cursor=pointer]:
+                        - /url: /hr/items/6
+                    - cell "原理科普" [ref=e656]
+                    - cell "approved" [ref=e657]:
+                      - generic [ref=e658]: approved
+                    - cell "指人乳中天然存在的葡萄球菌、乳酸菌及双歧杆菌等菌群，它们是婴儿肠道菌群的重要来源，对宝宝肠道健康至关重要。" [ref=e659]
+                    - cell "移 除" [ref=e660]:
+                      - button "移 除" [ref=e661] [cursor=pointer]:
+                        - generic [ref=e662]: 移 除
+                  - row "5 母乳天然共生元 原理科普 approved 指母乳中富含的母乳低聚糖、短链脂肪酸及免疫因子等活性物质，能够协同作用以促进新生儿肠道微生态的塑造与免疫发育。 移 除" [ref=e663]:
+                    - cell [ref=e664]:
+                      - checkbox [ref=e667] [cursor=pointer]
+                    - cell "5" [ref=e669]
+                    - cell "母乳天然共生元" [ref=e670]:
+                      - link "母乳天然共生元" [ref=e671] [cursor=pointer]:
+                        - /url: /hr/items/5
+                    - cell "原理科普" [ref=e672]
+                    - cell "approved" [ref=e673]:
+                      - generic [ref=e674]: approved
+                    - cell "指母乳中富含的母乳低聚糖、短链脂肪酸及免疫因子等活性物质，能够协同作用以促进新生儿肠道微生态的塑造与免疫发育。" [ref=e675]
+                    - cell "移 除" [ref=e676]:
+                      - button "移 除" [ref=e677] [cursor=pointer]:
+                        - generic [ref=e678]: 移 除
+                  - row "4 初乳与成熟乳的差异 原理科普 approved 初乳中的蛋白质和免疫球蛋白含量显著高于成熟乳，主要用于为新生儿在生命早期提供关键的免疫支持。 移 除" [ref=e679]:
+                    - cell [ref=e680]:
+                      - checkbox [ref=e683] [cursor=pointer]
+                    - cell "4" [ref=e685]
+                    - cell "初乳与成熟乳的差异" [ref=e686]:
+                      - link "初乳与成熟乳的差异" [ref=e687] [cursor=pointer]:
+                        - /url: /hr/items/4
+                    - cell "原理科普" [ref=e688]
+                    - cell "approved" [ref=e689]:
+                      - generic [ref=e690]: approved
+                    - cell "初乳中的蛋白质和免疫球蛋白含量显著高于成熟乳，主要用于为新生儿在生命早期提供关键的免疫支持。" [ref=e691]
+                    - cell "移 除" [ref=e692]:
+                      - button "移 除" [ref=e693] [cursor=pointer]:
+                        - generic [ref=e694]: 移 除
+                  - row "3 母乳的复杂免疫成分 原理科普 approved 母乳中富含宏量与微量营养素、免疫球蛋白、母乳低聚糖及微生物，为新生儿建立最初的免疫保护并促进免疫系统发育。 移 除" [ref=e695]:
+                    - cell [ref=e696]:
+                      - checkbox [ref=e699] [cursor=pointer]
+                    - cell "3" [ref=e701]
+                    - cell "母乳的复杂免疫成分" [ref=e702]:
+                      - link "母乳的复杂免疫成分" [ref=e703] [cursor=pointer]:
+                        - /url: /hr/items/3
+                    - cell "原理科普" [ref=e704]
+                    - cell "approved" [ref=e705]:
+                      - generic [ref=e706]: approved
+                    - cell "母乳中富含宏量与微量营养素、免疫球蛋白、母乳低聚糖及微生物，为新生儿建立最初的免疫保护并促进免疫系统发育。" [ref=e707]
+                    - cell "移 除" [ref=e708]:
+                      - button "移 除" [ref=e709] [cursor=pointer]:
+                        - generic [ref=e710]: 移 除
+                  - row "2 母婴菌群纵向传递 原理科普 approved 指母体微生物在子宫内、分娩及哺乳期等阶段向后代的遗传与传递过程，对生命早期婴儿免疫和代谢的发育具有重要保护作用。 移 除" [ref=e711]:
+                    - cell [ref=e712]:
+                      - checkbox [ref=e715] [cursor=pointer]
+                    - cell "2" [ref=e717]
+                    - cell "母婴菌群纵向传递" [ref=e718]:
+                      - link "母婴菌群纵向传递" [ref=e719] [cursor=pointer]:
+                        - /url: /hr/items/2
+                    - cell "原理科普" [ref=e720]
+                    - cell "approved" [ref=e721]:
+                      - generic [ref=e722]: approved
+                    - cell "指母体微生物在子宫内、分娩及哺乳期等阶段向后代的遗传与传递过程，对生命早期婴儿免疫和代谢的发育具有重要保护作用。" [ref=e723]
+                    - cell "移 除" [ref=e724]:
+                      - button "移 除" [ref=e725] [cursor=pointer]:
+                        - generic [ref=e726]: 移 除
+              - list [ref=e727]:
+                - listitem "上一页" [ref=e728]:
+                  - button "left" [disabled] [ref=e729]:
+                    - img "left" [ref=e730]:
+                      - img [ref=e731]
+                - listitem "1" [ref=e733] [cursor=pointer]:
+                  - generic [ref=e734]: "1"
+                - listitem "2" [ref=e735] [cursor=pointer]:
+                  - generic [ref=e736]: "2"
+                - listitem "下一页" [ref=e737] [cursor=pointer]:
+                  - button "right" [ref=e738]:
+                    - img "right" [ref=e739]:
+                      - img [ref=e740]

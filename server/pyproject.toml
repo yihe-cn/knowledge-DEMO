@@ -14,8 +14,9 @@ dependencies = [
     "langchain-openai>=0.2.10",
     "langchain-core>=0.3.20",
     # RAG / KB stack
-    "pymilvus>=2.4.7",
+    "pymilvus[milvus_lite]>=2.4.10",
     "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
     "aiomysql>=0.2.0",
     "alembic>=1.13.3",
     "celery[redis]>=5.4.0",

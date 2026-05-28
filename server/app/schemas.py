@@ -269,6 +269,7 @@ class AssessmentTemplateOut(BaseModel):
 class GenerateQuestionsRequest(BaseModel):
     num: int = 5
     difficulty: Literal["easy", "normal", "hard"] = "normal"
+    scope_kp_ids: list[int] | None = None
 
 
 class LearnerCreate(BaseModel):

@@ -39,6 +39,7 @@ from ..schemas import (
     KpProductBindRequest,
     KpReindexBatchRequest,
 )
+from ..config import settings
 from ..vector_store import update_kp_ids
 
 
@@ -1067,10 +1068,26 @@ async def enrich_pending_kps(
 async def reindex_kps_batch(body: KpReindexBatchRequest) -> dict[str, Any]:
     """批量重建 KP 召回索引。kp_ids 为空时默认全部 approved KP；
     reenrich=True 时每个 KP 先调 LLM 重生成 trigger_questions/aliases/scenario 再 reindex。
-    走 Celery 异步执行，返回 task_id；前端轮询任务状态或直接看 retrievalIndexedAt。
+    默认在 FastAPI 进程内执行；Milvus Lite 不适合多个进程同时写同一个 .db 文件。
+    显式设置 CELERY_ENABLED=true 时才走 Celery 异步执行。
 
     Celery/Redis 不可用时返回结构化错误而不是 500。
     """
+    if not settings.celery_enabled:
+        from ..kp_extraction.kp_indexer import reindex_kps_batch_sync
+
+        result = await asyncio.to_thread(
+            reindex_kps_batch_sync, body.kp_ids, body.reenrich
+        )
+        return {
+            "ok": bool(result.get("ok", True)),
+            "mode": "inline",
+            "task_id": None,
+            "kp_ids": body.kp_ids,
+            "reenrich": body.reenrich,
+            "result": result,
+        }
+
     from ..celery_app import reindex_kps_batch_task
 
     try:
