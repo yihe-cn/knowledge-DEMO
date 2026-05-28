@@ -16,6 +16,7 @@ from ..db import (
     AssessmentResponse,
     AssessmentTemplate,
     AssignmentStatus,
+    KpRegistry,
     Learner,
     get_session,
 )
@@ -266,9 +267,20 @@ async def generate_questions(
         kp_ids = _normalize_int_ids(scope.get("kp_ids") or [])
     if not kp_ids:
         raise HTTPException(400, "scope.kp_ids 为空，无法生成题目")
+    existing_ids = set(
+        (
+            await session.execute(select(KpRegistry.id).where(KpRegistry.id.in_(kp_ids)))
+        ).scalars().all()
+    )
+    missing_ids = [kid for kid in kp_ids if kid not in existing_ids]
+    if missing_ids:
+        joined = "、".join(str(kid) for kid in missing_ids)
+        raise HTTPException(400, f"scope 中的 KP 不存在或已删除：{joined}，请重新选择考核范围 KP 后再生成")
     drafts = await generate_bank_questions(
         scope_kp_ids=kp_ids, num=int(body.num), difficulty=body.difficulty
     )
+    if not drafts:
+        raise HTTPException(502, "AI 未生成有效题目，请检查所选 KP 是否有定义、富化卡片或 chunks 后重试")
     return {"questions": drafts}
 
 

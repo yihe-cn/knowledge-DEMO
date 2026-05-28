@@ -58,6 +58,10 @@ export default function AssessmentEditor() {
     (kpsQuery.data || []).forEach((k: any) => m.set(k.id, k.name));
     return m;
   }, [kpsQuery.data]);
+  const missingScopeKpIds = useMemo(() => {
+    if (!kpsQuery.isSuccess) return [];
+    return scopeKpIds.filter((id) => !kpNameMap.has(id));
+  }, [kpNameMap, kpsQuery.isSuccess, scopeKpIds]);
 
   const saveMut = useMutation({
     mutationFn: () =>
@@ -85,6 +89,10 @@ export default function AssessmentEditor() {
         scope_kp_ids: scopeKpIds,
       }),
     onSuccess: (drafts) => {
+      if (drafts.length === 0) {
+        message.error('AI 没有生成有效题目，请检查所选 KP 素材后重试');
+        return;
+      }
       const startIdx = questions.length;
       const appended = drafts.map((d: any, i: number) => ({
         idx: startIdx + i,
@@ -183,6 +191,15 @@ export default function AssessmentEditor() {
                 />
               );
             })()}
+            {missingScopeKpIds.length > 0 && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginTop: 8 }}
+                message={`当前模板引用的 KP 已不存在：${missingScopeKpIds.join('、')}`}
+                description="请删除这些失效标签并重新选择考核范围 KP 后，再使用 AI 草拟模板题。"
+              />
+            )}
           </Form.Item>
         </Form>
       </Card>
@@ -192,7 +209,7 @@ export default function AssessmentEditor() {
           title="考核模板题库"
           extra={
             <Space>
-              <Button onClick={() => setAiOpen(true)} disabled={!scopeKpIds.length}>
+              <Button onClick={() => setAiOpen(true)} disabled={!scopeKpIds.length || missingScopeKpIds.length > 0}>
                 AI 草拟模板题
               </Button>
               <Button

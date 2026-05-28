@@ -1,21 +1,31 @@
 .DS_Store
 **/.DS_Store
 
+.claude/
+**/.claude/
+
 node_modules/
 **/node_modules/
 
 .env
 .env.local
 .env.*.local
+.env.development
+
+*.log
+*.tsbuildinfo
+**/.playwright-cli/
 
 # server/uploads/ 下大文件（pdf/pptx KB 原始件）不入仓库，
 # 但 products/ 下封面图需要打到 docker image 作为 seed，得放行。
 # 注意：必须先 unignore 父目录本身，再单独 ignore 兄弟项，否则负向规则失效。
 server/uploads/*
 !server/uploads/products/
+server/data/
 server/.venv/
 server/.pytest_cache/
 server/**/__pycache__/
 
+app/dist/
 admin/dist/
 admin/tsconfig.tsbuildinfo
